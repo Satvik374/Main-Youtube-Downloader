@@ -139,9 +139,21 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
       setIsDownloading(false);
     },
     onError: (error: any) => {
+      // Parse error response to get suggestion if available
+      let errorMessage = error.message || "An error occurred during FFmpeg download.";
+      let suggestion = "";
+      
+      try {
+        if (error.message && error.message.includes("YouTube is currently blocking")) {
+          suggestion = " Try the regular download buttons below instead.";
+        }
+      } catch (e) {
+        // Ignore parsing errors
+      }
+      
       toast({
         title: "FFmpeg Download Failed",
-        description: error.message || "An error occurred during FFmpeg download.",
+        description: errorMessage + suggestion,
         variant: "destructive",
       });
       setIsDownloading(false);

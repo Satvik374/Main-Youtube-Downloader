@@ -10,7 +10,7 @@ import { promisify } from "util";
 import { CookieJar } from "tough-cookie";
 import { proxyService } from "./proxyService";
 import ffmpeg from "fluent-ffmpeg";
-import { exec } from "child_process";
+import { exec, spawn } from "child_process";
 import { pipeline } from "stream/promises";
 const mkdir = promisify(fs.mkdir);
 const access = promisify(fs.access);
@@ -1080,33 +1080,140 @@ export async function registerRoutes(app: Express): Promise<Server> {
           qualitySelector = 'best';
       }
 
-      // yt-dlp command with FFmpeg integration
-      const cmd = [
-        'yt-dlp',
+      // Enhanced yt-dlp command with anti-detection measures
+      const baseArgs = [
         '--format', qualitySelector,
         '--merge-output-format', format,
         '--output', outputPath,
         '--no-playlist',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '--referer', 'https://www.youtube.com/',
+        '--embed-chapters',
+        '--write-info-json',
+        '--no-write-playlist-metafiles',
         url
-      ].join(' ');
+      ];
 
-      console.log(`FFmpeg download command: ${cmd}`);
+      console.log(`FFmpeg download command: yt-dlp ${baseArgs.join(' ')}`);
       
-      try {
-        await execAsync(cmd);
-      } catch (error) {
-        console.error('yt-dlp with FFmpeg failed:', error);
-        return res.status(500).json({ message: "FFmpeg download failed" });
+      let downloadSuccess = false;
+      let lastError: any;
+      
+      // Try multiple strategies for better success rate
+      const strategies = [
+        // Strategy 1: Standard download with anti-detection
+        [...baseArgs],
+        // Strategy 2: Force IPv4 and add more headers
+        [...baseArgs, '--force-ipv4', '--add-header', 'Accept-Language:en-US,en;q=0.9'],
+        // Strategy 3: Use mobile API
+        [...baseArgs.slice(0, -1), '--user-agent', 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip', url],
+        // Strategy 4: Simple format without quality restriction
+        ['--format', 'mp4', '--merge-output-format', format, '--output', outputPath, '--no-playlist', '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', url],
+        // Strategy 5: Fallback to any available format
+        ['--output', outputPath, '--no-playlist', url]
+      ];
+      
+      for (let i = 0; i < strategies.length && !downloadSuccess; i++) {
+        const currentArgs = strategies[i];
+        console.log(`Attempting strategy ${i + 1}: yt-dlp ${currentArgs.join(' ')}`);
+        
+        try {
+          await new Promise((resolve, reject) => {
+            const process = spawn('yt-dlp', currentArgs);
+            let stderr = '';
+            let stdout = '';
+            
+            process.stderr?.on('data', (data) => {
+              stderr += data.toString();
+            });
+            
+            process.stdout?.on('data', (data) => {
+              stdout += data.toString();
+            });
+            
+            process.on('close', (code) => {
+              if (code === 0) {
+                resolve(void 0);
+              } else {
+                reject(new Error(`yt-dlp exited with code ${code}. stderr: ${stderr}`));
+              }
+            });
+            
+            process.on('error', (error) => {
+              reject(error);
+            });
+          });
+          
+          downloadSuccess = true;
+          console.log(`Strategy ${i + 1} succeeded`);
+        } catch (error) {
+          lastError = error;
+          console.log(`Strategy ${i + 1} failed:`, error);
+          
+          // Clean up failed attempt file if exists
+          try {
+            if (fs.existsSync(outputPath)) {
+              fs.unlinkSync(outputPath);
+            }
+          } catch (cleanupError) {
+            console.log('Failed to cleanup file:', cleanupError);
+          }
+          
+          // Wait before next attempt
+          if (i < strategies.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+      }
+      
+      if (!downloadSuccess) {
+        console.error('All yt-dlp strategies failed:', lastError);
+        
+        // Check if it's a 403 error (YouTube blocking)
+        const isBlocked = lastError?.message?.includes('403') || lastError?.message?.includes('Forbidden');
+        const isSignatureError = lastError?.message?.includes('nsig extraction failed') || lastError?.message?.includes('Signature extraction failed');
+        
+        let errorMessage = "FFmpeg download failed. ";
+        
+        if (isBlocked || isSignatureError) {
+          errorMessage += "YouTube is currently blocking automated downloads. This is temporary - please try the regular download options instead, or wait 15-30 minutes before trying FFmpeg downloads again.";
+        } else {
+          errorMessage += "Please try again later or use the regular download options.";
+        }
+        
+        return res.status(503).json({ 
+          message: errorMessage,
+          suggestion: "Try using the regular Video or Audio download buttons instead - they use different methods that may work better."
+        });
       }
 
       // Get video title for filename
       let title = 'video';
       try {
-        const infoCmd = `yt-dlp --get-title "${url}"`;
-        const { stdout } = await execAsync(infoCmd);
-        title = stdout.trim().replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50);
+        const titlePromise = new Promise<string>((resolve, reject) => {
+          const process = spawn('yt-dlp', ['--get-title', url]);
+          let stdout = '';
+          
+          process.stdout?.on('data', (data) => {
+            stdout += data.toString();
+          });
+          
+          process.on('close', (code) => {
+            if (code === 0) {
+              resolve(stdout.trim());
+            } else {
+              reject(new Error(`Failed to get title, code ${code}`));
+            }
+          });
+          
+          process.on('error', reject);
+        });
+        
+        const videoTitle = await titlePromise;
+        title = videoTitle.replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50);
       } catch {
         // Use default title if can't get video title
+        console.log('Failed to get video title, using default');
       }
 
       // Set response headers for download
