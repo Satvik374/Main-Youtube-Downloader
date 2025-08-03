@@ -28,6 +28,11 @@ Preferred communication style: Simple, everyday language.
   - Advanced session management with realistic browser headers and user agents
   - Rate limiting and human-like delay patterns to avoid detection
   - Enhanced error handling with user-friendly messages for different block types
+  - **Production Enhancement**: Added sophisticated anti-detection for Render deployment
+    - Environment-aware rate limiting (stricter in production)
+    - Enhanced user agent rotation and header diversification
+    - Production-specific delays and exponential backoff patterns
+    - Mobile user agent fallbacks for production environments
 - **Video Preview Modal**: Added in-browser video viewing capability
   - YouTube embed integration for watching videos directly in the app
   - Separate "Play" and "Download" buttons in download history

@@ -15,20 +15,26 @@ const access = promisify(fs.access);
 const sessionStore = new Map();
 const cookieJar = new CookieJar();
 
-// Rate limiting per IP to avoid detection
+// Enhanced rate limiting per IP with production-aware throttling
 const requestTracker = new Map();
+const serverStartTime = Date.now();
 
 function getRateLimitInfo(ip: string) {
   const now = Date.now();
   const requests = requestTracker.get(ip) || [];
   
-  // Remove requests older than 1 hour
-  const recentRequests = requests.filter((time: number) => now - time < 3600000);
+  // More aggressive rate limiting for production
+  const isProduction = process.env.NODE_ENV === 'production';
+  const timeWindow = isProduction ? 7200000 : 3600000; // 2 hours in prod, 1 hour in dev
+  
+  // Remove requests older than time window
+  const recentRequests = requests.filter((time: number) => now - time < timeWindow);
   requestTracker.set(ip, recentRequests);
   
   return {
     count: recentRequests.length,
-    lastRequest: recentRequests[recentRequests.length - 1] || 0
+    lastRequest: recentRequests[recentRequests.length - 1] || 0,
+    isProduction
   };
 }
 
@@ -38,34 +44,78 @@ function addRequest(ip: string) {
   requestTracker.set(ip, requests);
 }
 
-// Advanced anti-detection configuration
+// Production-aware delay patterns
+function getProductionDelay() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (isProduction) {
+    // Longer delays in production to avoid detection
+    return {
+      min: 5000,  // 5 seconds minimum
+      max: 15000, // 15 seconds maximum
+      betweenRetries: 30000 // 30 seconds between retry attempts
+    };
+  } else {
+    return {
+      min: 2000,
+      max: 5000,
+      betweenRetries: 5000
+    };
+  }
+}
+
+// Enhanced anti-detection configuration for production environments
 function getAdvancedConfig() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  // More diverse and updated user agents for production
   const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 OPR/107.0.0.0'
   ];
 
   const languages = [
     'en-US,en;q=0.9',
-    'en-GB,en;q=0.9',
-    'en-US,en;q=0.8',
-    'en-CA,en;q=0.9'
+    'en-GB,en;q=0.9,en-US;q=0.8',
+    'en-US,en;q=0.8,es;q=0.6',
+    'en-CA,en;q=0.9,fr;q=0.8',
+    'en-AU,en;q=0.9',
+    'en,en-US;q=0.9'
   ];
 
   const platforms = [
     'Win32',
     'MacIntel',
-    'Linux x86_64'
+    'Linux x86_64',
+    'Linux armv7l'
+  ];
+
+  // More sophisticated header configurations for production
+  const acceptHeaders = [
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+  ];
+
+  const encodings = [
+    'gzip, deflate, br',
+    'gzip, deflate, br, zstd',
+    'gzip, deflate'
   ];
 
   return {
     userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
     language: languages[Math.floor(Math.random() * languages.length)],
-    platform: platforms[Math.floor(Math.random() * platforms.length)]
+    platform: platforms[Math.floor(Math.random() * platforms.length)],
+    accept: acceptHeaders[Math.floor(Math.random() * acceptHeaders.length)],
+    encoding: encodings[Math.floor(Math.random() * encodings.length)],
+    isProduction
   };
 }
 
@@ -141,48 +191,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid YouTube URL format" });
       }
 
-      // Rate limiting check
+      // Enhanced production-aware rate limiting
       const rateLimitInfo = getRateLimitInfo(clientIP);
-      if (rateLimitInfo.count > 10) {
+      const isProduction = rateLimitInfo.isProduction;
+      
+      // More strict limits in production
+      const maxRequests = isProduction ? 5 : 10;
+      const minInterval = isProduction ? 30000 : 5000; // 30 seconds in prod, 5 seconds in dev
+      
+      if (rateLimitInfo.count > maxRequests) {
+        const waitTime = isProduction ? "30-60 minutes" : "a few minutes";
         return res.status(429).json({ 
-          message: "Too many requests. Please wait a few minutes before trying again." 
+          message: `Too many requests. Please wait ${waitTime} before trying again. This helps avoid YouTube's automated blocking systems.` 
         });
       }
 
-      // Check if last request was too recent (less than 5 seconds ago)
+      // Check if last request was too recent
       const timeSinceLastRequest = Date.now() - rateLimitInfo.lastRequest;
-      if (timeSinceLastRequest < 5000) {
+      if (timeSinceLastRequest < minInterval) {
+        const waitSeconds = Math.ceil((minInterval - timeSinceLastRequest) / 1000);
         return res.status(429).json({ 
-          message: "Please wait a few seconds between downloads to avoid detection." 
+          message: `Please wait ${waitSeconds} seconds between downloads to avoid detection.` 
         });
       }
 
       addRequest(clientIP);
 
-      // Advanced anti-detection setup with session management
+      // Enhanced anti-detection setup with production-specific optimizations
       const config = getAdvancedConfig();
+      const delays = getProductionDelay();
       const agent = ytdl.createAgent();
       
       // Create session-specific headers that mimic real browser behavior
       const sessionId = `session_${clientIP}_${Date.now()}`;
+      const baseHeaders = {
+        'User-Agent': config.userAgent,
+        'Accept': config.accept,
+        'Accept-Language': config.language,
+        'Accept-Encoding': config.encoding,
+        'Cache-Control': config.isProduction ? 'max-age=0' : 'no-cache',
+        'Pragma': config.isProduction ? 'no-cache' : undefined,
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': config.isProduction ? 'cross-site' : 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="121", "Google Chrome";v="121"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': `"${config.platform}"`,
+        'Connection': 'keep-alive',
+        'DNT': '1',
+        'Sec-GPC': '1'
+      };
+
+      // Remove undefined headers
       const requestOptions = {
-        headers: {
-          'User-Agent': config.userAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Language': config.language,
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1',
-          'Upgrade-Insecure-Requests': '1',
-          'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': `"${config.platform}"`,
-          'Connection': 'keep-alive'
-        }
+        headers: Object.fromEntries(
+          Object.entries(baseHeaders).filter(([_, value]) => value !== undefined)
+        )
       };
       
       // Multiple retry attempts with different strategies
@@ -190,20 +256,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let videoDetails;
       let lastError;
       
-      // Helper function to add human-like delays
-      const randomDelay = (min = 2000, max = 5000) => 
+      // Enhanced delay functions with production awareness
+      const randomDelay = (min = delays.min, max = delays.max) => 
         new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
       
-      // Simulate human browsing pattern
-      const simulateHumanBehavior = async () => {
-        // Add initial delay to simulate user thinking time
-        await randomDelay(1000, 3000);
+      // Simulate human browsing pattern with production-specific behavior
+      const simulateHumanBehavior = async (attempt = 1) => {
+        if (config.isProduction) {
+          // More sophisticated delays in production
+          const baseDelay = Math.random() * 10000 + 5000; // 5-15 seconds
+          const exponentialBackoff = Math.pow(1.5, attempt - 1) * 1000; // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, baseDelay + exponentialBackoff));
+        } else {
+          // Faster delays in development
+          await randomDelay(1000, 3000);
+        }
       };
       
       // Strategy 1: Advanced session-based approach
       try {
         console.log('Attempting download with advanced session management...');
-        await simulateHumanBehavior();
+        await simulateHumanBehavior(1);
         
         // Store session info for consistency
         sessionStore.set(sessionId, {
@@ -222,9 +295,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log('Advanced session failed, trying fallback methods...');
         lastError = error;
         
-        // Strategy 2: Basic agent only
+        // Strategy 2: Basic agent with production delays
         try {
-          await randomDelay();
+          await simulateHumanBehavior(2);
           info = await ytdl.getInfo(url, { agent });
           videoDetails = info.videoDetails;
           console.log('Successfully retrieved video info with basic agent');
@@ -232,39 +305,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log('Basic agent failed, trying without agent...');
           lastError = error2;
           
-          // Strategy 3: No agent, just basic request
+          // Strategy 3: No agent, minimal headers
           try {
-            await randomDelay();
-            info = await ytdl.getInfo(url);
+            await simulateHumanBehavior(3);
+            info = await ytdl.getInfo(url, {
+              requestOptions: {
+                headers: {
+                  'User-Agent': config.userAgent
+                }
+              }
+            });
             videoDetails = info.videoDetails;
-            console.log('Successfully retrieved video info without agent');
+            console.log('Successfully retrieved video info with minimal headers');
           } catch (error3) {
-            console.log('All strategies failed, trying with different user agent...');
+            console.log('Minimal headers failed, trying alternative approach...');
             lastError = error3;
             
-            // Strategy 4: Different user agent without agent
+            // Strategy 4: Production-specific fallback with mobile user agent
             try {
-              await randomDelay();
+              await simulateHumanBehavior(4);
+              const mobileUA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1';
               info = await ytdl.getInfo(url, {
                 requestOptions: {
                   headers: {
-                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent': mobileUA,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5'
                   }
                 }
               });
               videoDetails = info.videoDetails;
-              console.log('Successfully retrieved video info with alternative user agent');
+              console.log('Successfully retrieved video info with mobile user agent');
             } catch (error4) {
               lastError = error4;
               const errorMessage = lastError instanceof Error ? lastError.message : String(lastError);
               
-              // Check if it's a bot detection error
-              if (errorMessage.includes('Sign in to confirm') || errorMessage.includes('robot') || errorMessage.includes('captcha')) {
-                console.log('Detected bot protection, trying yt-dlp as final fallback...');
-                
-                throw new Error('YouTube is currently blocking all automated access. Please try again in 15-30 minutes, or try a different video URL.');
+              // Enhanced error detection for production
+              const isBlocked = errorMessage.includes('Sign in to confirm') || 
+                              errorMessage.includes('robot') || 
+                              errorMessage.includes('captcha') ||
+                              errorMessage.includes('blocked') ||
+                              errorMessage.includes('unavailable') ||
+                              errorMessage.includes('parsing watch.html');
+              
+              if (isBlocked) {
+                console.log('Detected YouTube blocking in production environment');
+                const waitTime = config.isProduction ? '15-30 minutes' : '5-10 minutes';
+                throw new Error(`YouTube is temporarily blocking automated downloads. Please wait ${waitTime} and try again, or try a different video.`);
               } else {
-                throw new Error(`All download strategies failed. Last error: ${errorMessage}`);
+                throw new Error(`Video download failed. Error: ${errorMessage}`);
               }
             }
           }
@@ -492,27 +581,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('Access-Control-Allow-Origin', '*');
       
-      // Create agent and stream with enhanced anti-detection
+      // Enhanced streaming with production-specific anti-detection
+      const isProduction = process.env.NODE_ENV === 'production';
+      const streamConfig = getAdvancedConfig();
       const agent = ytdl.createAgent();
       
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      ];
-      
-      const requestOptions = {
-        headers: {
-          'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-          'Accept': '*/*',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Referer': 'https://www.youtube.com/',
-          'Origin': 'https://www.youtube.com',
-          'Sec-Fetch-Dest': 'empty',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Site': 'same-origin'
-        }
+      const streamHeaders = {
+        'User-Agent': streamConfig.userAgent,
+        'Accept': '*/*',
+        'Accept-Language': streamConfig.language,
+        'Accept-Encoding': streamConfig.encoding,
+        'Referer': 'https://www.youtube.com/',
+        'Origin': 'https://www.youtube.com',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': isProduction ? 'cross-site' : 'same-origin',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
       };
+      
+      const requestOptions = { headers: streamHeaders };
       
       const audioStream = ytdl(url, { 
         quality: 'highestaudio',
@@ -524,7 +612,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       audioStream.on('error', (error) => {
         console.error('Audio stream error:', error);
         if (!res.headersSent) {
-          res.status(500).json({ message: "Audio streaming failed" });
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes('parsing watch.html') || errorMessage.includes('Sign in to confirm')) {
+            res.status(503).json({ message: "YouTube is temporarily blocking downloads. Please wait 15-30 minutes and try again." });
+          } else {
+            res.status(500).json({ message: "Audio streaming failed" });
+          }
         }
       });
       
@@ -553,32 +646,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Access-Control-Allow-Origin', '*');
       
-      // Create agent and get video info with enhanced anti-detection
+      // Enhanced video streaming with production-specific anti-detection
+      const isProduction = process.env.NODE_ENV === 'production';
+      const videoConfig = getAdvancedConfig();
       const agent = ytdl.createAgent();
       
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      ];
-      
-      const requestOptions = {
-        headers: {
-          'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Referer': 'https://www.youtube.com/',
-          'Origin': 'https://www.youtube.com'
-        }
+      const videoHeaders = {
+        'User-Agent': videoConfig.userAgent,
+        'Accept': videoConfig.accept,
+        'Accept-Language': videoConfig.language,
+        'Accept-Encoding': videoConfig.encoding,
+        'Referer': 'https://www.youtube.com/',
+        'Origin': 'https://www.youtube.com',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': isProduction ? 'cross-site' : 'same-origin',
+        'Cache-Control': 'no-cache'
       };
       
+      const requestOptions = { headers: videoHeaders };
+      
       let info;
-      try {
-        info = await ytdl.getInfo(url, { agent, requestOptions });
-      } catch (error) {
-        // Fallback without agent if first attempt fails
-        console.log('Retrying video info fetch without agent...');
-        info = await ytdl.getInfo(url, { requestOptions });
+      let attempt = 1;
+      let lastError;
+      
+      // Multiple retry strategy for production robustness
+      while (attempt <= 3) {
+        try {
+          if (isProduction && attempt > 1) {
+            // Add production delays between attempts
+            const delay = Math.random() * 5000 + (attempt - 1) * 3000; // 0-5s + backoff
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+          
+          console.log(`Video info attempt ${attempt}...`);
+          info = await ytdl.getInfo(url, { agent, requestOptions });
+          break;
+        } catch (error) {
+          lastError = error;
+          console.log(`Video info attempt ${attempt} failed, retrying...`);
+          attempt++;
+          
+          // Final attempt without agent
+          if (attempt === 3) {
+            console.log('Retrying video info fetch without agent...');
+            info = await ytdl.getInfo(url, { requestOptions });
+            break;
+          }
+        }
+      }
+      
+      if (!info && lastError) {
+        throw lastError;
       }
       
 
