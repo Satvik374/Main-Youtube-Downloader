@@ -914,6 +914,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Find the best available format
+      if (!info) {
+        throw new Error('No video info available');
+      }
       let allVideoFormats = ytdl.filterFormats(info.formats, 'video');
       const videoAndAudioFormats = ytdl.filterFormats(info.formats, 'videoandaudio');
       let selectedFormat = null;
@@ -997,7 +1000,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const enhancedRequestOptions = {
         headers: {
-          'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+          'User-Agent': videoConfig.userAgent,
           'Accept': '*/*',
           'Accept-Language': 'en-US,en;q=0.9',
           'Accept-Encoding': 'gzip, deflate, br',
