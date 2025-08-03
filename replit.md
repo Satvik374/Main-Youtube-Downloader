@@ -33,6 +33,11 @@ Preferred communication style: Simple, everyday language.
     - Enhanced user agent rotation and header diversification
     - Production-specific delays and exponential backoff patterns
     - Mobile user agent fallbacks for production environments
+  - **Proxy Service Integration**: Implemented alternative download methods that bypass YouTube IP blocking
+    - Integration with Invidious and Piped APIs for video metadata
+    - Automatic proxy rotation using free proxy services
+    - yt-dlp fallback with proxy support for enhanced reliability
+    - Complete bypass of direct YouTube API calls to avoid server IP detection
 - **Video Preview Modal**: Added in-browser video viewing capability
   - YouTube embed integration for watching videos directly in the app
   - Separate "Play" and "Download" buttons in download history

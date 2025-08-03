@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import { promisify } from "util";
 import { CookieJar } from "tough-cookie";
+import { proxyService } from "./proxyService";
 const mkdir = promisify(fs.mkdir);
 const access = promisify(fs.access);
 
@@ -251,10 +252,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
         )
       };
       
-      // Multiple retry attempts with different strategies
+      // Try proxy service first (bypasses YouTube IP blocking)
+      let videoInfo;
+      let lastError;
+      
+      console.log('Attempting download using proxy service (bypasses YouTube IP blocking)...');
+      
+      try {
+        const proxyResult = await proxyService.getVideoInfo(url);
+        
+        if (proxyResult && proxyResult.formats.length > 0) {
+          console.log('Successfully retrieved video info using proxy service');
+          
+          // Convert proxy service format to our expected format
+          const bestFormat = proxyResult.formats[0];
+          
+          // Generate filename
+          const sanitizedTitle = proxyResult.title
+            .replace(/[^\w\s-]/g, '')
+            .replace(/\s+/g, '_')
+            .substring(0, 100);
+          const timestamp = Date.now();
+          
+          let filename: string;
+          let downloadUrl: string;
+          let fileSize: string = "Calculating...";
+          
+          if (format === 'audio') {
+            filename = `${sanitizedTitle}_${timestamp}.mp3`;
+            // Find audio format or use best available
+            const audioFormat = proxyResult.formats.find(f => f.quality === 'audio') || bestFormat;
+            if (audioFormat.filesize) {
+              fileSize = (audioFormat.filesize / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+            downloadUrl = `/api/stream/proxy-audio/${encodeURIComponent(url)}/${encodeURIComponent(filename)}`;
+          } else {
+            // Video download
+            filename = `${sanitizedTitle}_${timestamp}.mp4`;
+            if (bestFormat.filesize) {
+              fileSize = (bestFormat.filesize / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+            downloadUrl = `/api/stream/proxy-video/${encodeURIComponent(url)}/${encodeURIComponent(filename)}?quality=${quality}`;
+          }
+          
+          const result = {
+            success: true,
+            title: proxyResult.title,
+            fileSize,
+            thumbnail: proxyResult.thumbnail,
+            downloadUrl,
+            filename
+          };
+          
+          return res.json(result);
+        }
+      } catch (proxyError) {
+        console.log('Proxy service failed, falling back to direct methods:', proxyError);
+        lastError = proxyError;
+      }
+      
+      // Fallback to original ytdl method if proxy service fails
       let info;
       let videoDetails;
-      let lastError;
       
       // Enhanced delay functions with production awareness
       const randomDelay = (min = delays.min, max = delays.max) => 
@@ -562,6 +621,129 @@ export async function registerRoutes(app: Express): Promise<Server> {
           message: "Failed to download video. The video might be private, age-restricted, or temporarily unavailable.",
           error: errorMessage
         });
+      }
+    }
+  });
+
+  // Proxy-based audio streaming (bypasses YouTube IP blocking)
+  app.get("/api/stream/proxy-audio/:url/:filename", async (req, res) => {
+    try {
+      const url = decodeURIComponent(req.params.url);
+      const filename = decodeURIComponent(req.params.filename);
+
+      if (!ytdl.validateURL(url)) {
+        return res.status(400).json({ message: "Invalid YouTube URL" });
+      }
+
+      // Set proper headers for download
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      
+      console.log('Using proxy service for audio streaming...');
+      
+      try {
+        const videoInfo = await proxyService.getVideoInfo(url);
+        const audioFormat = videoInfo.formats.find(f => f.quality === 'audio') || videoInfo.formats[0];
+        
+        if (!audioFormat || !audioFormat.url) {
+          throw new Error('No audio format available');
+        }
+        
+        // Stream the audio from the proxy URL
+        const fetch = (await import('node-fetch')).default;
+        const response = await fetch(audioFormat.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.youtube.com/'
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        if (response.body) {
+          response.body.pipe(res);
+        } else {
+          throw new Error('No response body');
+        }
+      } catch (error) {
+        console.error('Proxy audio streaming error:', error);
+        res.status(500).json({ message: "Audio streaming failed through proxy service" });
+      }
+    } catch (error) {
+      console.error('Proxy audio streaming error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: "Audio streaming failed" });
+      }
+    }
+  });
+
+  // Proxy-based video streaming (bypasses YouTube IP blocking)
+  app.get("/api/stream/proxy-video/:url/:filename", async (req, res) => {
+    try {
+      const url = decodeURIComponent(req.params.url);
+      const filename = decodeURIComponent(req.params.filename);
+      const quality = req.query.quality as string || 'highest';
+
+      if (!ytdl.validateURL(url)) {
+        return res.status(400).json({ message: "Invalid YouTube URL" });
+      }
+
+      // Set proper headers for download
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      
+      console.log('Using proxy service for video streaming...');
+      
+      try {
+        const videoInfo = await proxyService.getVideoInfo(url);
+        
+        // Find best format based on quality
+        let selectedFormat = videoInfo.formats[0]; // Default
+        
+        if (quality === '4k') {
+          selectedFormat = videoInfo.formats.find(f => f.quality.includes('2160') || f.quality.includes('4K')) || selectedFormat;
+        } else if (quality === '1080p') {
+          selectedFormat = videoInfo.formats.find(f => f.quality.includes('1080')) || selectedFormat;
+        } else if (quality === '720p') {
+          selectedFormat = videoInfo.formats.find(f => f.quality.includes('720')) || selectedFormat;
+        } else if (quality === '480p') {
+          selectedFormat = videoInfo.formats.find(f => f.quality.includes('480')) || selectedFormat;
+        }
+        
+        if (!selectedFormat || !selectedFormat.url) {
+          throw new Error('No video format available');
+        }
+        
+        // Stream the video from the proxy URL
+        const fetch = (await import('node-fetch')).default;
+        const response = await fetch(selectedFormat.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.youtube.com/'
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        if (response.body) {
+          response.body.pipe(res);
+        } else {
+          throw new Error('No response body');
+        }
+      } catch (error) {
+        console.error('Proxy video streaming error:', error);
+        res.status(500).json({ message: "Video streaming failed through proxy service" });
+      }
+    } catch (error) {
+      console.error('Proxy video streaming error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: "Video streaming failed" });
       }
     }
   });
