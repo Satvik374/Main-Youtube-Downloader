@@ -1,3 +1,6 @@
+/* Font Awesome CDN */
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -91,6 +94,3 @@
     box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
   }
 }
-
-/* Font Awesome CDN */
-@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css');
