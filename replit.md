@@ -8,11 +8,17 @@ Preferred communication style: Simple, everyday language.
 
 # Recent Changes
 
-## 2025-08-03: Google AdSense Integration
+## 2025-08-03: Google AdSense Integration & FFmpeg Enhancement
 - **AdSense Setup**: Added Google AdSense code to HTML head section
   - Publisher ID: ca-pub-9578468690172928
   - Script properly integrated with async loading and crossorigin attributes
   - Ready for ad monetization once AdSense approval is complete
+- **FFmpeg Integration**: Added advanced download system using FFmpeg for superior quality
+  - New `/api/download-ffmpeg` endpoint using yt-dlp with FFmpeg backend
+  - Enhanced video/audio quality with intelligent format selection
+  - Supports 4K, 1440p, 1080p, 720p, and 480p with automatic fallbacks
+  - Frontend now features dual download options: standard and FFmpeg enhanced
+  - Automatic cleanup of temporary files and proper error handling
 
 ## 2025-01-03: Database Integration & 4K Download Fix
 - **Database Migration**: Successfully migrated from in-memory storage to PostgreSQL database

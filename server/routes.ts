@@ -9,8 +9,12 @@ import fs from "fs";
 import { promisify } from "util";
 import { CookieJar } from "tough-cookie";
 import { proxyService } from "./proxyService";
+import ffmpeg from "fluent-ffmpeg";
+import { exec } from "child_process";
+import { pipeline } from "stream/promises";
 const mkdir = promisify(fs.mkdir);
 const access = promisify(fs.access);
+const execAsync = promisify(exec);
 
 // Global session management for better anti-detection
 const sessionStore = new Map();
@@ -1031,6 +1035,101 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!res.headersSent) {
         res.status(500).json({ message: "Video streaming failed" });
       }
+    }
+  });
+
+  // FFmpeg-based download endpoint for better quality using yt-dlp
+  app.post("/api/download-ffmpeg", async (req, res) => {
+    try {
+      const { url, quality = '1080p', format = 'mp4' } = req.body;
+      
+      if (!url) {
+        return res.status(400).json({ message: "URL is required" });
+      }
+
+      // Create temp directory for processing
+      const tempDir = path.join(process.cwd(), 'temp');
+      try {
+        await access(tempDir);
+      } catch {
+        await mkdir(tempDir, { recursive: true });
+      }
+
+      const videoId = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1] || Date.now().toString();
+      const outputPath = path.join(tempDir, `${videoId}_ffmpeg.${format}`);
+
+      // Use yt-dlp with FFmpeg for best quality
+      let qualitySelector;
+      switch(quality) {
+        case '4k':
+          qualitySelector = 'bestvideo[height<=2160]+bestaudio/best[height<=2160]';
+          break;
+        case '1440p':
+          qualitySelector = 'bestvideo[height<=1440]+bestaudio/best[height<=1440]';
+          break;
+        case '1080p':
+          qualitySelector = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]';
+          break;
+        case '720p':
+          qualitySelector = 'bestvideo[height<=720]+bestaudio/best[height<=720]';
+          break;
+        case '480p':
+          qualitySelector = 'bestvideo[height<=480]+bestaudio/best[height<=480]';
+          break;
+        default:
+          qualitySelector = 'best';
+      }
+
+      // yt-dlp command with FFmpeg integration
+      const cmd = [
+        'yt-dlp',
+        '--format', qualitySelector,
+        '--merge-output-format', format,
+        '--output', outputPath,
+        '--no-playlist',
+        url
+      ].join(' ');
+
+      console.log(`FFmpeg download command: ${cmd}`);
+      
+      try {
+        await execAsync(cmd);
+      } catch (error) {
+        console.error('yt-dlp with FFmpeg failed:', error);
+        return res.status(500).json({ message: "FFmpeg download failed" });
+      }
+
+      // Get video title for filename
+      let title = 'video';
+      try {
+        const infoCmd = `yt-dlp --get-title "${url}"`;
+        const { stdout } = await execAsync(infoCmd);
+        title = stdout.trim().replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50);
+      } catch {
+        // Use default title if can't get video title
+      }
+
+      // Set response headers for download
+      const filename = `${title}_${quality}.${format}`;
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Type', format === 'mp4' ? 'video/mp4' : 'video/webm');
+
+      // Stream the final file
+      const fileStream = fs.createReadStream(outputPath);
+      fileStream.pipe(res);
+
+      // Cleanup temp file after streaming
+      fileStream.on('end', () => {
+        setTimeout(() => {
+          fs.unlink(outputPath, (err) => {
+            if (err) console.log(`Failed to delete temp file: ${outputPath}`);
+          });
+        }, 1000);
+      });
+
+    } catch (error) {
+      console.error('FFmpeg download error:', error);
+      res.status(500).json({ message: "FFmpeg download failed" });
     }
   });
 

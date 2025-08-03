@@ -85,6 +85,69 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
     },
   });
 
+  const ffmpegDownloadMutation = useMutation({
+    mutationFn: async (data: { url: string; format: string; quality?: string }) => {
+      const response = await fetch('/api/download-ffmpeg', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'FFmpeg download failed');
+      }
+      
+      // Get filename from Content-Disposition header
+      const contentDisposition = response.headers.get('Content-Disposition');
+      const filename = contentDisposition?.match(/filename="(.+)"/)?.[1] || 'download';
+      
+      // Create blob and trigger download
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+      
+      return { filename, title: filename.split('_')[0] };
+    },
+    onSuccess: async (result) => {
+      // Add to history
+      await apiRequest("POST", "/api/downloads", {
+        title: result.title,
+        url,
+        format: activeTab === "video" ? `MP4 • ${selectedQuality} (FFmpeg)` : `${selectedFormat.toUpperCase()} • High Quality (FFmpeg)`,
+        quality: activeTab === "video" ? selectedQuality : "High Quality",
+        fileSize: "Unknown",
+        thumbnail: "",
+        status: "completed",
+      });
+      
+      toast({
+        title: "FFmpeg Download Complete!",
+        description: `${result.filename} has been downloaded with enhanced quality.`,
+      });
+      
+      onDownloadComplete();
+      setIsDownloading(false);
+    },
+    onError: (error: any) => {
+      toast({
+        title: "FFmpeg Download Failed",
+        description: error.message || "An error occurred during FFmpeg download.",
+        variant: "destructive",
+      });
+      setIsDownloading(false);
+    },
+  });
+
   const isValidYouTubeUrl = (url: string) => {
     return url.includes('youtube.com') || url.includes('youtu.be');
   };
@@ -130,6 +193,51 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
     downloadMutation.mutate({
       url,
       format: activeTab,
+      quality: activeTab === "video" ? selectedQuality : selectedFormat,
+    });
+  };
+
+  const handleFFmpegDownload = () => {
+    if (!url.trim()) {
+      toast({
+        title: "URL Required",
+        description: "Please enter a YouTube URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!isValidYouTubeUrl(url)) {
+      toast({
+        title: "Invalid URL",
+        description: "Please enter a valid YouTube URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (activeTab === "video" && !selectedQuality) {
+      toast({
+        title: "Quality Required",
+        description: "Please select a video quality.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (activeTab === "audio" && !selectedFormat) {
+      toast({
+        title: "Format Required",
+        description: "Please select an audio format.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsDownloading(true);
+    ffmpegDownloadMutation.mutate({
+      url,
+      format: activeTab === "video" ? "mp4" : selectedFormat,
       quality: activeTab === "video" ? selectedQuality : selectedFormat,
     });
   };
@@ -250,23 +358,47 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
           </TabsContent>
         </Tabs>
 
-        <Button
-          onClick={handleDownload}
-          disabled={isDownloading || downloadMutation.isPending}
-          className="w-full download-gradient text-white font-bold py-4 px-8 text-lg hover:shadow-lg transition-all duration-300"
-        >
-          {isDownloading || downloadMutation.isPending ? (
-            <>
-              <i className="fas fa-spinner animate-spin mr-2"></i>
-              Processing...
-            </>
-          ) : (
-            <>
-              <Download className="h-5 w-5 mr-2" />
-              Start Download
-            </>
-          )}
-        </Button>
+        <div className="space-y-3">
+          <Button
+            onClick={handleDownload}
+            disabled={isDownloading || downloadMutation.isPending || ffmpegDownloadMutation.isPending}
+            className="w-full download-gradient text-white font-bold py-4 px-8 text-lg hover:shadow-lg transition-all duration-300"
+          >
+            {isDownloading || downloadMutation.isPending || ffmpegDownloadMutation.isPending ? (
+              <>
+                <i className="fas fa-spinner animate-spin mr-2"></i>
+                Processing...
+              </>
+            ) : (
+              <>
+                <Download className="h-5 w-5 mr-2" />
+                Start Download
+              </>
+            )}
+          </Button>
+          
+          <Button
+            onClick={handleFFmpegDownload}
+            disabled={isDownloading || downloadMutation.isPending || ffmpegDownloadMutation.isPending}
+            variant="outline"
+            className="w-full border-2 border-blue-500 text-blue-600 font-bold py-4 px-8 text-lg hover:bg-blue-50 transition-all duration-300"
+          >
+            {isDownloading || downloadMutation.isPending || ffmpegDownloadMutation.isPending ? (
+              <>
+                <i className="fas fa-spinner animate-spin mr-2"></i>
+                Processing...
+              </>
+            ) : (
+              <>
+                <i className="fas fa-magic mr-2"></i>
+                FFmpeg Enhanced Download
+              </>
+            )}
+          </Button>
+          <p className="text-center text-sm text-gray-500">
+            FFmpeg download provides better quality and format conversion
+          </p>
+        </div>
 
         {isDownloading && (
           <ProgressTracker
