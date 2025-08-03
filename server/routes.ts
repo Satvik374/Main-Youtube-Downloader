@@ -99,6 +99,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         videoDetails = info.videoDetails;
       }
       
+
+      
       // Generate filename
       const sanitizedTitle = videoDetails.title
         .replace(/[^\w\s-]/g, '')
@@ -165,20 +167,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Try to find the requested quality, with fallbacks
         let videoFormat = null;
-        const videoFormats = ytdl.filterFormats(info.formats, 'videoandaudio');
+        let allVideoFormats = ytdl.filterFormats(info.formats, 'video');
+        const videoAndAudioFormats = ytdl.filterFormats(info.formats, 'videoandaudio');
         
-        // First try exact quality match
-        videoFormat = videoFormats.find(f => f.qualityLabel === qualityFilter);
+        // For 4K, use more sophisticated selection
+        if (quality === '4k') {
+          // First try to find exact 2160p formats (video-only for 4K)
+          videoFormat = allVideoFormats.find(f => 
+            (f.qualityLabel === '2160p' || f.height === 2160) && f.hasVideo && !f.hasAudio
+          );
+          
+          // Try different 4K quality labels
+          if (!videoFormat) {
+            videoFormat = allVideoFormats.find(f => 
+              (f.qualityLabel?.includes('2160') || f.height === 2160) && f.hasVideo
+            );
+          }
+          
+          // Try highest available video-only format if 4K not available
+          if (!videoFormat) {
+            videoFormat = allVideoFormats
+              .filter(f => f.hasVideo && !f.hasAudio && f.height && f.height >= 1080)
+              .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+          }
+          
+          // Fallback to combined formats with highest resolution
+          if (!videoFormat) {
+            videoFormat = videoAndAudioFormats
+              .filter(f => f.height && f.height >= 1080)
+              .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+          }
+        } else if (quality === '1080p') {
+          // Try video-only formats first for higher quality
+          videoFormat = allVideoFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && !f.hasAudio);
+          
+          // If no video-only format, try combined formats
+          if (!videoFormat) {
+            videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter);
+          }
+        } else {
+          // For lower qualities, prefer combined formats
+          videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter);
+          
+          // Fallback to video-only if needed
+          if (!videoFormat) {
+            videoFormat = allVideoFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && !f.hasAudio);
+          }
+        }
         
         // Try fallback qualities
         if (!videoFormat && fallbackQualities.length > 0) {
           for (const fallback of fallbackQualities) {
             if (fallback === 'highest') {
-              videoFormat = videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+              // Try video-only first for highest quality
+              videoFormat = allVideoFormats
+                .filter(f => f.hasVideo && !f.hasAudio)
+                .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+              
+              if (!videoFormat) {
+                videoFormat = videoAndAudioFormats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+              }
             } else if (fallback === 'lowest') {
-              videoFormat = videoFormats.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
+              videoFormat = videoAndAudioFormats.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
             } else {
-              videoFormat = videoFormats.find(f => f.qualityLabel === fallback);
+              // Try video-only first for specific qualities
+              videoFormat = allVideoFormats.find(f => f.qualityLabel === fallback && f.hasVideo && !f.hasAudio);
+              if (!videoFormat) {
+                videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === fallback);
+              }
             }
             if (videoFormat) break;
           }
@@ -186,8 +242,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // Last resort: get any video format
         if (!videoFormat) {
-          videoFormat = videoFormats[0];
+          videoFormat = allVideoFormats.filter(f => f.hasVideo)[0] || videoAndAudioFormats[0];
         }
+        
+
         
         if (videoFormat && videoFormat.contentLength) {
           fileSize = (parseInt(videoFormat.contentLength) / (1024 * 1024)).toFixed(1) + ' MB';
@@ -287,6 +345,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent = ytdl.createAgent();
       const info = await ytdl.getInfo(url, { agent });
       
+
+      
       // Map quality to ytdl format with fallbacks
       let qualityFilter: string;
       let fallbackQualities: string[] = [];
@@ -317,18 +377,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Find the best available format
-      const videoFormats = ytdl.filterFormats(info.formats, 'videoandaudio');
-      let selectedFormat = videoFormats.find(f => f.qualityLabel === qualityFilter);
+      let allVideoFormats = ytdl.filterFormats(info.formats, 'video');
+      const videoAndAudioFormats = ytdl.filterFormats(info.formats, 'videoandaudio');
+      let selectedFormat = null;
+      
+      // For 4K, use more sophisticated selection
+      if (quality === '4k') {
+        // First try to find exact 2160p formats (video-only for 4K)
+        selectedFormat = allVideoFormats.find(f => 
+          (f.qualityLabel === '2160p' || f.height === 2160) && f.hasVideo && !f.hasAudio
+        );
+        
+        // Try different 4K quality labels
+        if (!selectedFormat) {
+          selectedFormat = allVideoFormats.find(f => 
+            (f.qualityLabel?.includes('2160') || f.height === 2160) && f.hasVideo
+          );
+        }
+        
+        // Try highest available video-only format if 4K not available
+        if (!selectedFormat) {
+          selectedFormat = allVideoFormats
+            .filter(f => f.hasVideo && !f.hasAudio && f.height && f.height >= 1080)
+            .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+        }
+        
+        // Fallback to combined formats with highest resolution
+        if (!selectedFormat) {
+          selectedFormat = videoAndAudioFormats
+            .filter(f => f.height && f.height >= 1080)
+            .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+        }
+      } else if (quality === '1080p') {
+        // Try video-only formats first for higher quality
+        selectedFormat = allVideoFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && !f.hasAudio);
+        
+        // If no video-only format, try combined formats
+        if (!selectedFormat) {
+          selectedFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter);
+        }
+      } else {
+        // For lower qualities, prefer combined formats
+        selectedFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter);
+        
+        // Fallback to video-only if needed
+        if (!selectedFormat) {
+          selectedFormat = allVideoFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && !f.hasAudio);
+        }
+      }
       
       // Try fallback qualities if the exact quality isn't available
       if (!selectedFormat && fallbackQualities.length > 0) {
         for (const fallback of fallbackQualities) {
           if (fallback === 'highest') {
-            selectedFormat = videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+            // Try video-only first for highest quality
+            selectedFormat = allVideoFormats
+              .filter(f => f.hasVideo && !f.hasAudio)
+              .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+            
+            if (!selectedFormat) {
+              selectedFormat = videoAndAudioFormats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+            }
           } else if (fallback === 'lowest') {
-            selectedFormat = videoFormats.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
+            selectedFormat = videoAndAudioFormats.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
           } else {
-            selectedFormat = videoFormats.find(f => f.qualityLabel === fallback);
+            // Try video-only first for specific qualities
+            selectedFormat = allVideoFormats.find(f => f.qualityLabel === fallback && f.hasVideo && !f.hasAudio);
+            if (!selectedFormat) {
+              selectedFormat = videoAndAudioFormats.find(f => f.qualityLabel === fallback);
+            }
           }
           if (selectedFormat) break;
         }
@@ -336,8 +453,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Last resort: get any video format
       if (!selectedFormat) {
-        selectedFormat = videoFormats[0];
+        selectedFormat = allVideoFormats.filter(f => f.hasVideo)[0] || videoAndAudioFormats[0];
       }
+
+
 
       const videoStream = ytdl(url, { 
         format: selectedFormat,

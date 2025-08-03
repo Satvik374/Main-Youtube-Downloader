@@ -6,6 +6,16 @@ This is a YouTube Downloader Pro application built as a full-stack web applicati
 
 Preferred communication style: Simple, everyday language.
 
+# Recent Changes
+
+## 2025-01-03: Database Integration & 4K Download Fix
+- **Database Migration**: Successfully migrated from in-memory storage to PostgreSQL database
+- **4K Download Enhancement**: Fixed 4K video download functionality with improved format selection
+  - Enhanced format detection to prioritize video-only streams for higher quality
+  - Added sophisticated fallback logic for 4K, 1440p, and 1080p formats  
+  - Now correctly downloads true 4K (2160p) content when available
+  - Optimized format selection for both download preparation and streaming endpoints
+
 # System Architecture
 
 ## Frontend Architecture
