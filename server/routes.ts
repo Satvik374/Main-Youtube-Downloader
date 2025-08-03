@@ -82,21 +82,102 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid YouTube URL format" });
       }
 
-      // Set agent to avoid detection issues
+      // Enhanced anti-detection setup
       const agent = ytdl.createAgent();
       
-      // Get video info with retry mechanism
+      // More realistic user agents to avoid detection
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+      ];
+      
+      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+      
+      const requestOptions = {
+        headers: {
+          'User-Agent': randomUserAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Accept-Encoding': 'gzip, deflate',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Cache-Control': 'max-age=0'
+        }
+      };
+      
+      // Multiple retry attempts with different strategies
       let info;
       let videoDetails;
+      let lastError;
       
+      // Helper function to add random delay
+      const randomDelay = () => new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+      
+      // Strategy 1: With agent and enhanced headers
       try {
-        info = await ytdl.getInfo(url, { agent });
+        console.log('Attempting download with enhanced headers...');
+        await randomDelay(); // Add random delay to avoid detection
+        info = await ytdl.getInfo(url, { 
+          agent,
+          requestOptions
+        });
         videoDetails = info.videoDetails;
+        console.log('Successfully retrieved video info with enhanced headers');
       } catch (error) {
-        console.error('First attempt failed, trying without agent:', error);
-        // Fallback without agent
-        info = await ytdl.getInfo(url);
-        videoDetails = info.videoDetails;
+        console.log('Enhanced headers failed, trying basic agent...');
+        lastError = error;
+        
+        // Strategy 2: Basic agent only
+        try {
+          await randomDelay();
+          info = await ytdl.getInfo(url, { agent });
+          videoDetails = info.videoDetails;
+          console.log('Successfully retrieved video info with basic agent');
+        } catch (error2) {
+          console.log('Basic agent failed, trying without agent...');
+          lastError = error2;
+          
+          // Strategy 3: No agent, just basic request
+          try {
+            await randomDelay();
+            info = await ytdl.getInfo(url);
+            videoDetails = info.videoDetails;
+            console.log('Successfully retrieved video info without agent');
+          } catch (error3) {
+            console.log('All strategies failed, trying with different user agent...');
+            lastError = error3;
+            
+            // Strategy 4: Different user agent without agent
+            try {
+              await randomDelay();
+              info = await ytdl.getInfo(url, {
+                requestOptions: {
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                  }
+                }
+              });
+              videoDetails = info.videoDetails;
+              console.log('Successfully retrieved video info with alternative user agent');
+            } catch (error4) {
+              lastError = error4;
+              const errorMessage = lastError instanceof Error ? lastError.message : String(lastError);
+              
+              // Check if it's a bot detection error
+              if (errorMessage.includes('Sign in to confirm') || errorMessage.includes('robot') || errorMessage.includes('captcha')) {
+                throw new Error('YouTube detected automated access. Please try again in a few minutes, or try using a different video URL.');
+              }
+              
+              throw new Error(`All download strategies failed. Last error: ${errorMessage}`);
+            }
+          }
+        }
       }
       
 
@@ -295,18 +376,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('Access-Control-Allow-Origin', '*');
       
-      // Create agent and stream with better options
+      // Create agent and stream with enhanced anti-detection
       const agent = ytdl.createAgent();
+      
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      ];
+      
+      const requestOptions = {
+        headers: {
+          'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Referer': 'https://www.youtube.com/',
+          'Origin': 'https://www.youtube.com',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin'
+        }
+      };
       
       const audioStream = ytdl(url, { 
         quality: 'highestaudio',
         filter: 'audioonly',
         agent,
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
-        }
+        requestOptions
       });
       
       audioStream.on('error', (error) => {
@@ -341,9 +437,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Access-Control-Allow-Origin', '*');
       
-      // Create agent and get video info
+      // Create agent and get video info with enhanced anti-detection
       const agent = ytdl.createAgent();
-      const info = await ytdl.getInfo(url, { agent });
+      
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      ];
+      
+      const requestOptions = {
+        headers: {
+          'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Referer': 'https://www.youtube.com/',
+          'Origin': 'https://www.youtube.com'
+        }
+      };
+      
+      let info;
+      try {
+        info = await ytdl.getInfo(url, { agent, requestOptions });
+      } catch (error) {
+        // Fallback without agent if first attempt fails
+        console.log('Retrying video info fetch without agent...');
+        info = await ytdl.getInfo(url, { requestOptions });
+      }
       
 
       
@@ -458,14 +578,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
 
 
+      const enhancedRequestOptions = {
+        headers: {
+          'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Referer': 'https://www.youtube.com/',
+          'Origin': 'https://www.youtube.com',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin'
+        }
+      };
+      
       const videoStream = ytdl(url, { 
         format: selectedFormat,
         agent,
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
-        }
+        requestOptions: enhancedRequestOptions
       });
       
       videoStream.on('error', (error) => {
