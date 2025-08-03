@@ -4,11 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { History, RefreshCw, Trash2, Download, CheckCircle, AlertTriangle } from "lucide-react";
+import { History, RefreshCw, Trash2, Download, CheckCircle, AlertTriangle, Play } from "lucide-react";
 import type { DownloadHistory } from "@shared/schema";
+import VideoPreviewModal from "./video-preview-modal";
 
 export default function DownloadHistory() {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState<DownloadHistory | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -47,6 +50,50 @@ export default function DownloadHistory() {
   const handleClearAll = () => {
     if (window.confirm("Are you sure you want to clear all download history?")) {
       clearAllMutation.mutate();
+    }
+  };
+
+  const handlePreviewVideo = (item: DownloadHistory) => {
+    setSelectedVideo(item);
+    setIsPreviewOpen(true);
+  };
+
+  const handleDownloadAgain = async (item: DownloadHistory) => {
+    const format = item.format.toLowerCase().includes('mp4') ? 'video' : 'audio';
+    const quality = item.quality || (format === 'video' ? '720p' : 'mp3');
+    
+    try {
+      const response = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: item.url,
+          format,
+          quality
+        })
+      });
+      
+      const result = await response.json();
+      
+      if (result.downloadUrl) {
+        const link = document.createElement('a');
+        link.href = result.downloadUrl;
+        link.download = result.filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        toast({
+          title: "Download Started",
+          description: "Your file download has started again.",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Download Failed",
+        description: "An error occurred while downloading the file.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -155,34 +202,17 @@ export default function DownloadHistory() {
                     size="sm"
                     variant="ghost"
                     className="text-blue-600 hover:text-blue-800"
-                    onClick={() => {
-                      // Re-download the item by creating a new download request
-                      const format = item.format.toLowerCase().includes('mp4') ? 'video' : 'audio';
-                      const quality = item.quality || (format === 'video' ? '720p' : 'mp3');
-                      
-                      // Trigger download API call
-                      fetch('/api/download', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          url: item.url,
-                          format,
-                          quality
-                        })
-                      })
-                      .then(res => res.json())
-                      .then(result => {
-                        if (result.downloadUrl) {
-                          const link = document.createElement('a');
-                          link.href = result.downloadUrl;
-                          link.download = result.filename;
-                          document.body.appendChild(link);
-                          link.click();
-                          document.body.removeChild(link);
-                        }
-                      })
-                      .catch(console.error);
-                    }}
+                    onClick={() => handlePreviewVideo(item)}
+                    title="Preview/Watch Video"
+                  >
+                    <Play className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-green-600 hover:text-green-800"
+                    onClick={() => handleDownloadAgain(item)}
+                    title="Download Again"
                   >
                     <Download className="h-4 w-4" />
                   </Button>
@@ -192,6 +222,7 @@ export default function DownloadHistory() {
                     onClick={() => deleteItemMutation.mutate(item.id)}
                     disabled={deleteItemMutation.isPending}
                     className="text-red-600 hover:text-red-800"
+                    title="Remove from History"
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -201,6 +232,26 @@ export default function DownloadHistory() {
           </div>
         )}
       </CardContent>
+      
+      {/* Video Preview Modal */}
+      {selectedVideo && (
+        <VideoPreviewModal
+          isOpen={isPreviewOpen}
+          onClose={() => {
+            setIsPreviewOpen(false);
+            setSelectedVideo(null);
+          }}
+          videoData={{
+            id: selectedVideo.id,
+            title: selectedVideo.title,
+            url: selectedVideo.url,
+            format: selectedVideo.format,
+            quality: selectedVideo.quality || '720p',
+            thumbnail: selectedVideo.thumbnail,
+            fileSize: selectedVideo.fileSize || 'Unknown'
+          }}
+        />
+      )}
     </Card>
   );
 }
