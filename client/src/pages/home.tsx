@@ -14,14 +14,6 @@ export default function Home() {
       {/* Header */}
       <header className="gradient-bg text-white shadow-lg">
         <div className="container mx-auto px-4 py-6">
-          {/* AdSense Banner Placeholder */}
-          <div className="bg-white bg-opacity-20 rounded-lg p-4 mb-6 text-center">
-            <div className="text-sm opacity-75 mb-2">Advertisement</div>
-            <div className="bg-white bg-opacity-30 rounded h-24 flex items-center justify-center">
-              <span className="text-white text-opacity-75">Google AdSense Banner (728x90)</span>
-            </div>
-          </div>
-          
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center space-x-4">
               <div className="bg-youtube rounded-lg p-3">
@@ -45,15 +37,6 @@ export default function Home() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <Downloader onDownloadComplete={handleDownloadComplete} />
-          
-          {/* AdSense Rectangle Ad */}
-          <div className="bg-white rounded-lg shadow-md p-6 mb-8 text-center">
-            <div className="text-sm text-gray-500 mb-3">Advertisement</div>
-            <div className="bg-gray-100 rounded h-64 flex items-center justify-center">
-              <span className="text-gray-400">Google AdSense Rectangle (300x250)</span>
-            </div>
-          </div>
-
           <DownloadHistory key={refreshHistory} />
         </div>
       </div>
@@ -61,14 +44,6 @@ export default function Home() {
       {/* Footer */}
       <footer className="bg-gray-800 text-white mt-16">
         <div className="container mx-auto px-4 py-8">
-          {/* AdSense Footer Banner */}
-          <div className="bg-gray-700 rounded-lg p-4 mb-8 text-center">
-            <div className="text-sm text-gray-400 mb-2">Advertisement</div>
-            <div className="bg-gray-600 rounded h-24 flex items-center justify-center">
-              <span className="text-gray-400">Google AdSense Banner (728x90)</span>
-            </div>
-          </div>
-          
           <div className="grid md:grid-cols-3 gap-8">
             <div>
               <h5 className="font-bold text-lg mb-4">YouTube Downloader Pro</h5>

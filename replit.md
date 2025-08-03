@@ -1,6 +1,6 @@
 # Overview
 
-This is a YouTube Downloader Pro application built as a full-stack web application. The system allows users to download YouTube videos in various formats and qualities, with features including download history tracking, progress monitoring, and a modern responsive UI. The application is designed as a monorepo with separate client and server components, utilizing modern web technologies for both frontend and backend development.
+This is a YouTube Downloader Pro application built as a full-stack web application. The system allows users to download YouTube videos in various formats and qualities, with features including download history tracking, progress monitoring, and a modern responsive UI. The application is designed as a monorepo with separate client and server components, utilizing modern web technologies for both frontend and backend development. Note: AdSense banner advertisements have been removed from the UI as requested by the user.
 
 # User Preferences
 
