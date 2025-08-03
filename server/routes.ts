@@ -72,6 +72,10 @@ function getProductionDelay() {
 function getAdvancedConfig() {
   const isProduction = process.env.NODE_ENV === 'production';
   
+  // Enhanced configuration for cloud platforms like Render
+  const isRender = process.env.RENDER === 'true' || process.env.RENDER_SERVICE_ID;
+  const isCloudPlatform = isRender || process.env.RAILWAY_PROJECT_ID || process.env.VERCEL;
+  
   // More diverse and updated user agents for production
   const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -120,11 +124,64 @@ function getAdvancedConfig() {
     platform: platforms[Math.floor(Math.random() * platforms.length)],
     accept: acceptHeaders[Math.floor(Math.random() * acceptHeaders.length)],
     encoding: encodings[Math.floor(Math.random() * encodings.length)],
-    isProduction
+    isProduction,
+    isCloudPlatform,
+    cloudPlatformDelay: isCloudPlatform ? 8000 : 3000, // Longer delays for cloud platforms
+    maxRetries: isCloudPlatform ? 2 : 3 // Fewer retries on cloud platforms
   };
 }
 
+// Production error handling middleware
+function setupProductionMiddleware(app: Express) {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isRender = process.env.RENDER === 'true' || process.env.RENDER_SERVICE_ID;
+  
+  if (isProduction && isRender) {
+    console.log('Setting up Render-specific middleware...');
+    
+    // Memory monitoring for Render's limited resources
+    setInterval(() => {
+      const usage = process.memoryUsage();
+      const heapUsedMB = Math.round(usage.heapUsed / 1024 / 1024);
+      if (heapUsedMB > 400) { // Render free tier limit awareness
+        console.warn(`High memory usage: ${heapUsedMB}MB`);
+        if (global.gc) {
+          global.gc();
+        }
+      }
+    }, 60000); // Check every minute
+    
+    // Request timeout handling for long downloads
+    app.use((req, res, next) => {
+      if (req.path.includes('/download') || req.path.includes('/stream')) {
+        req.setTimeout(300000); // 5 minutes for downloads
+        res.setTimeout(300000);
+      }
+      next();
+    });
+    
+    // Enhanced error handling for production
+    app.use((error: any, req: any, res: any, next: any) => {
+      console.error('Production error:', error);
+      
+      if (error.code === 'ECONNRESET' || error.code === 'EPIPE') {
+        console.log('Client disconnected during download');
+        return;
+      }
+      
+      if (!res.headersSent) {
+        res.status(500).json({
+          message: 'Service temporarily unavailable. Please try again.',
+          code: error.code || 'UNKNOWN'
+        });
+      }
+    });
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Setup production middleware
+  setupProductionMiddleware(app);
   // Serve ads.txt file for Google AdSense with proper content type
   app.get('/ads.txt', (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -837,6 +894,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const videoConfig = getAdvancedConfig();
       const agent = ytdl.createAgent();
       
+      // Cloud platform specific optimizations
+      if (videoConfig.isCloudPlatform) {
+        console.log('Applying cloud platform optimizations for video streaming...');
+        // Add longer delays for cloud platforms
+        await new Promise(resolve => setTimeout(resolve, videoConfig.cloudPlatformDelay));
+      }
+      
       const videoHeaders = {
         'User-Agent': videoConfig.userAgent,
         'Accept': videoConfig.accept,
@@ -857,7 +921,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let lastError;
       
       // Multiple retry strategy for production robustness
-      while (attempt <= 3) {
+      const maxAttempts = videoConfig.maxRetries || 3;
+      while (attempt <= maxAttempts) {
         try {
           if (isProduction && attempt > 1) {
             // Add production delays between attempts
