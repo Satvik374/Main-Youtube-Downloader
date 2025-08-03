@@ -57,10 +57,28 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
       onDownloadComplete();
       setIsDownloading(false);
     },
-    onError: (error) => {
+    onError: (error: any) => {
+      let title = "Download Failed";
+      let description = error.message || "An error occurred during download.";
+      
+      // Handle different types of errors with specific guidance
+      if (error.message?.includes('YouTube is temporarily blocking')) {
+        title = "YouTube Blocking Downloads";
+        description = "YouTube is temporarily blocking automated downloads. Please wait 15-30 minutes and try again, or try a different video.";
+      } else if (error.message?.includes('YouTube detected too many requests')) {
+        title = "Too Many Requests";
+        description = "Please wait a few minutes before trying to download again.";
+      } else if (error.message?.includes('YouTube requires verification')) {
+        title = "Verification Required";
+        description = "YouTube needs verification. Wait a few minutes and try a different video URL.";
+      } else if (error.message?.includes('made too many download requests')) {
+        title = "Rate Limited";
+        description = "You've downloaded too many videos. Please wait before trying again.";
+      }
+      
       toast({
-        title: "Download Failed",
-        description: error.message || "An error occurred during download.",
+        title,
+        description,
         variant: "destructive",
       });
       setIsDownloading(false);

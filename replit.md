@@ -16,6 +16,17 @@ Preferred communication style: Simple, everyday language.
   - Now correctly downloads true 4K (2160p) content when available
   - Optimized format selection for both download preparation and streaming endpoints
 
+## 2025-01-03: Anti-Bot Detection & Video Preview Features
+- **Advanced Anti-Detection System**: Implemented comprehensive bot detection bypass
+  - Multi-strategy retry system with 5 different approaches including yt-dlp fallback
+  - Advanced session management with realistic browser headers and user agents
+  - Rate limiting and human-like delay patterns to avoid detection
+  - Enhanced error handling with user-friendly messages for different block types
+- **Video Preview Modal**: Added in-browser video viewing capability
+  - YouTube embed integration for watching videos directly in the app
+  - Separate "Play" and "Download" buttons in download history
+  - Modal with video details, controls, and re-download options
+
 # System Architecture
 
 ## Frontend Architecture

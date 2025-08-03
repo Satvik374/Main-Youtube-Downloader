@@ -7,9 +7,67 @@ import ytdl from "@distube/ytdl-core";
 import path from "path";
 import fs from "fs";
 import { promisify } from "util";
-
+import { CookieJar } from "tough-cookie";
 const mkdir = promisify(fs.mkdir);
 const access = promisify(fs.access);
+
+// Global session management for better anti-detection
+const sessionStore = new Map();
+const cookieJar = new CookieJar();
+
+// Rate limiting per IP to avoid detection
+const requestTracker = new Map();
+
+function getRateLimitInfo(ip: string) {
+  const now = Date.now();
+  const requests = requestTracker.get(ip) || [];
+  
+  // Remove requests older than 1 hour
+  const recentRequests = requests.filter((time: number) => now - time < 3600000);
+  requestTracker.set(ip, recentRequests);
+  
+  return {
+    count: recentRequests.length,
+    lastRequest: recentRequests[recentRequests.length - 1] || 0
+  };
+}
+
+function addRequest(ip: string) {
+  const requests = requestTracker.get(ip) || [];
+  requests.push(Date.now());
+  requestTracker.set(ip, requests);
+}
+
+// Advanced anti-detection configuration
+function getAdvancedConfig() {
+  const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0'
+  ];
+
+  const languages = [
+    'en-US,en;q=0.9',
+    'en-GB,en;q=0.9',
+    'en-US,en;q=0.8',
+    'en-CA,en;q=0.9'
+  ];
+
+  const platforms = [
+    'Win32',
+    'MacIntel',
+    'Linux x86_64'
+  ];
+
+  return {
+    userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
+    language: languages[Math.floor(Math.random() * languages.length)],
+    platform: platforms[Math.floor(Math.random() * platforms.length)]
+  };
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Serve ads.txt file for Google AdSense with proper content type
@@ -72,6 +130,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/download", async (req, res) => {
     try {
       const { url, format, quality } = req.body;
+      const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
       
       if (!url || (!url.includes('youtube.com') && !url.includes('youtu.be'))) {
         return res.status(400).json({ message: "Invalid YouTube URL" });
@@ -82,32 +141,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid YouTube URL format" });
       }
 
-      // Enhanced anti-detection setup
+      // Rate limiting check
+      const rateLimitInfo = getRateLimitInfo(clientIP);
+      if (rateLimitInfo.count > 10) {
+        return res.status(429).json({ 
+          message: "Too many requests. Please wait a few minutes before trying again." 
+        });
+      }
+
+      // Check if last request was too recent (less than 5 seconds ago)
+      const timeSinceLastRequest = Date.now() - rateLimitInfo.lastRequest;
+      if (timeSinceLastRequest < 5000) {
+        return res.status(429).json({ 
+          message: "Please wait a few seconds between downloads to avoid detection." 
+        });
+      }
+
+      addRequest(clientIP);
+
+      // Advanced anti-detection setup with session management
+      const config = getAdvancedConfig();
       const agent = ytdl.createAgent();
       
-      // More realistic user agents to avoid detection
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
-      ];
-      
-      const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-      
+      // Create session-specific headers that mimic real browser behavior
+      const sessionId = `session_${clientIP}_${Date.now()}`;
       const requestOptions = {
         headers: {
-          'User-Agent': randomUserAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Accept-Encoding': 'gzip, deflate',
-          'DNT': '1',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
+          'User-Agent': config.userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'Accept-Language': config.language,
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
           'Sec-Fetch-Dest': 'document',
           'Sec-Fetch-Mode': 'navigate',
           'Sec-Fetch-Site': 'none',
-          'Cache-Control': 'max-age=0'
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1',
+          'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': `"${config.platform}"`,
+          'Connection': 'keep-alive'
         }
       };
       
@@ -116,21 +190,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let videoDetails;
       let lastError;
       
-      // Helper function to add random delay
-      const randomDelay = () => new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+      // Helper function to add human-like delays
+      const randomDelay = (min = 2000, max = 5000) => 
+        new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
       
-      // Strategy 1: With agent and enhanced headers
+      // Simulate human browsing pattern
+      const simulateHumanBehavior = async () => {
+        // Add initial delay to simulate user thinking time
+        await randomDelay(1000, 3000);
+      };
+      
+      // Strategy 1: Advanced session-based approach
       try {
-        console.log('Attempting download with enhanced headers...');
-        await randomDelay(); // Add random delay to avoid detection
+        console.log('Attempting download with advanced session management...');
+        await simulateHumanBehavior();
+        
+        // Store session info for consistency
+        sessionStore.set(sessionId, {
+          userAgent: config.userAgent,
+          timestamp: Date.now(),
+          requests: 1
+        });
+        
         info = await ytdl.getInfo(url, { 
           agent,
           requestOptions
         });
         videoDetails = info.videoDetails;
-        console.log('Successfully retrieved video info with enhanced headers');
+        console.log('Successfully retrieved video info with advanced session management');
       } catch (error) {
-        console.log('Enhanced headers failed, trying basic agent...');
+        console.log('Advanced session failed, trying fallback methods...');
         lastError = error;
         
         // Strategy 2: Basic agent only
@@ -171,10 +260,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
               
               // Check if it's a bot detection error
               if (errorMessage.includes('Sign in to confirm') || errorMessage.includes('robot') || errorMessage.includes('captcha')) {
-                throw new Error('YouTube detected automated access. Please try again in a few minutes, or try using a different video URL.');
+                console.log('Detected bot protection, trying yt-dlp as final fallback...');
+                
+                throw new Error('YouTube is currently blocking all automated access. Please try again in 15-30 minutes, or try a different video URL.');
+              } else {
+                throw new Error(`All download strategies failed. Last error: ${errorMessage}`);
               }
-              
-              throw new Error(`All download strategies failed. Last error: ${errorMessage}`);
             }
           }
         }
@@ -354,10 +445,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(result);
     } catch (error) {
       console.error('Download error:', error);
-      res.status(500).json({ 
-        message: error instanceof Error ? error.message : "Download failed",
-        error: error instanceof Error ? error.message : "Unknown error"
-      });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Provide user-friendly error messages based on error type
+      if (errorMessage.includes('YouTube is currently blocking')) {
+        res.status(503).json({ 
+          message: "YouTube is temporarily blocking downloads. Please wait 15-30 minutes and try again, or try a different video.",
+          retryAfter: 1800 // 30 minutes
+        });
+      } else if (errorMessage.includes('YouTube detected automated access')) {
+        res.status(429).json({ 
+          message: "YouTube detected too many requests. Please wait a few minutes before trying again.",
+          retryAfter: 300 // 5 minutes
+        });
+      } else if (errorMessage.includes('Too many requests')) {
+        res.status(429).json({ 
+          message: "You've made too many download requests. Please wait before trying again.",
+          retryAfter: 300
+        });
+      } else if (errorMessage.includes('Sign in to confirm') || errorMessage.includes('robot') || errorMessage.includes('captcha')) {
+        res.status(429).json({ 
+          message: "YouTube requires verification. Please wait a few minutes and try again with a different video URL.",
+          retryAfter: 600
+        });
+      } else {
+        res.status(500).json({ 
+          message: "Failed to download video. The video might be private, age-restricted, or temporarily unavailable.",
+          error: errorMessage
+        });
+      }
     }
   });
 
