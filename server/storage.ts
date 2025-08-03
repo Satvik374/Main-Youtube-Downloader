@@ -1,5 +1,6 @@
-import { type DownloadHistory, type InsertDownloadHistory } from "@shared/schema";
-import { randomUUID } from "crypto";
+import { type DownloadHistory, type InsertDownloadHistory, downloadHistory } from "@shared/schema";
+import { db } from "./db";
+import { eq, desc } from "drizzle-orm";
 
 export interface IStorage {
   // Download History methods
@@ -9,38 +10,32 @@ export interface IStorage {
   clearDownloadHistory(): Promise<void>;
 }
 
-export class MemStorage implements IStorage {
-  private downloadHistory: Map<string, DownloadHistory>;
-
-  constructor() {
-    this.downloadHistory = new Map();
-  }
-
+export class DatabaseStorage implements IStorage {
   async getDownloadHistory(): Promise<DownloadHistory[]> {
-    return Array.from(this.downloadHistory.values()).sort(
-      (a, b) => new Date(b.downloadedAt || 0).getTime() - new Date(a.downloadedAt || 0).getTime()
-    );
+    const history = await db.select().from(downloadHistory).orderBy(desc(downloadHistory.downloadedAt));
+    return history;
   }
 
   async addDownloadHistory(insertDownload: InsertDownloadHistory): Promise<DownloadHistory> {
-    const id = randomUUID();
-    const download: DownloadHistory = {
-      ...insertDownload,
-      id,
-      status: insertDownload.status || "completed",
-      downloadedAt: new Date(),
-    };
-    this.downloadHistory.set(id, download);
+    const [download] = await db
+      .insert(downloadHistory)
+      .values({
+        ...insertDownload,
+        quality: insertDownload.quality || null,
+        fileSize: insertDownload.fileSize || null,
+        thumbnail: insertDownload.thumbnail || null,
+      })
+      .returning();
     return download;
   }
 
   async deleteDownloadHistory(id: string): Promise<void> {
-    this.downloadHistory.delete(id);
+    await db.delete(downloadHistory).where(eq(downloadHistory.id, id));
   }
 
   async clearDownloadHistory(): Promise<void> {
-    this.downloadHistory.clear();
+    await db.delete(downloadHistory);
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();

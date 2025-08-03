@@ -26,10 +26,11 @@ Preferred communication style: Simple, everyday language.
 ## Data Layer
 - **ORM**: Drizzle ORM with PostgreSQL dialect
 - **Database Schema**: 
-  - Download history table for tracking user downloads
+  - Download history table for tracking user downloads (ACTIVE - migrated from memory storage)
   - Users table for authentication (prepared but not fully implemented)
 - **Schema Validation**: Zod schemas for runtime type checking and API validation
 - **Database Provider**: Neon serverless PostgreSQL for cloud deployment
+- **Storage**: DatabaseStorage implementation using PostgreSQL (migrated from MemStorage on 2025-01-03)
 
 ## Development Tools
 - **Build System**: Vite for frontend bundling, esbuild for backend compilation
