@@ -20,6 +20,8 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
   const [selectedQuality, setSelectedQuality] = useState("");
   const [selectedFormat, setSelectedFormat] = useState("");
   const [isDownloading, setIsDownloading] = useState(false);
+  const [availableQualities, setAvailableQualities] = useState<string[]>([]);
+  const [isCheckingFormats, setIsCheckingFormats] = useState(false);
   const { toast } = useToast();
 
   const downloadMutation = useMutation({
@@ -30,13 +32,13 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
     onSuccess: async (result) => {
       // Add to history
       await apiRequest("POST", "/api/downloads", {
-        title: result.title,
-        url,
+        title: result.title || "Unknown Title",
+        url: url || "",
         format: activeTab === "video" ? `MP4 • ${selectedQuality}` : `${selectedFormat.toUpperCase()} • High Quality`,
         quality: activeTab === "video" ? selectedQuality : "High Quality",
-        fileSize: result.fileSize,
-        thumbnail: result.thumbnail,
-        status: "completed",
+        fileSize: result.fileSize || null,
+        thumbnail: result.thumbnail || null,
+        status: "completed"
       });
       
       // Trigger actual download
@@ -104,6 +106,10 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
       const contentDisposition = response.headers.get('Content-Disposition');
       const filename = contentDisposition?.match(/filename="(.+)"/)?.[1] || 'download';
       
+      // Get file size from Content-Length header
+      const contentLength = response.headers.get('Content-Length');
+      const fileSize = contentLength ? (parseInt(contentLength) / (1024 * 1024)).toFixed(1) + ' MB' : 'Unknown';
+      
       // Create blob and trigger download
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
@@ -116,18 +122,18 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(downloadUrl);
       
-      return { filename, title: filename.split('_')[0] };
+      return { filename, title: filename.split('_')[0], fileSize };
     },
     onSuccess: async (result) => {
       // Add to history
       await apiRequest("POST", "/api/downloads", {
-        title: result.title,
-        url,
-        format: activeTab === "video" ? `MP4 • ${selectedQuality} (FFmpeg)` : `${selectedFormat.toUpperCase()} • High Quality (FFmpeg)`,
+        title: result.title || "Unknown Title",
+        url: url || "",
+        format: activeTab === "video" ? `MP4 • ${selectedQuality} (FFmpeg)` : `${selectedFormat.toUpperCase()} • High Quality (FFmpeg)` ,
         quality: activeTab === "video" ? selectedQuality : "High Quality",
-        fileSize: "Unknown",
-        thumbnail: "",
-        status: "completed",
+        fileSize: result.fileSize || null,
+        thumbnail: result.thumbnail || null,
+        status: "completed"
       });
       
       toast({
@@ -144,8 +150,13 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
       let suggestion = "";
       
       try {
-        if (error.message && error.message.includes("YouTube is currently blocking")) {
+        // Check for format availability errors
+        if (error.message && error.message.includes("not available for this video")) {
+          suggestion = " Try selecting a different quality or use the regular download options.";
+        } else if (error.message && error.message.includes("YouTube is currently blocking")) {
           suggestion = " Try the regular download buttons below instead.";
+        } else if (error.message && error.message.includes("No suitable format found")) {
+          suggestion = " This video may not be available in the requested quality. Try a lower quality or use regular download.";
         }
       } catch (e) {
         // Ignore parsing errors
@@ -162,6 +173,83 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
 
   const isValidYouTubeUrl = (url: string) => {
     return url.includes('youtube.com') || url.includes('youtu.be');
+  };
+
+  const checkAvailableFormats = async (videoUrl: string) => {
+    if (!isValidYouTubeUrl(videoUrl)) return;
+    
+    setIsCheckingFormats(true);
+    try {
+      const response = await fetch('/api/check-formats', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: videoUrl }),
+      });
+      
+                    if (response.ok) {
+        const data = await response.json();
+        setAvailableQualities(data.availableQualities || []);
+        
+        // Auto-select the best available quality if none is selected
+        if (!selectedQuality && data.suggestedQuality) {
+          setSelectedQuality(data.suggestedQuality);
+        }
+        
+        // Show a toast with available qualities if the requested quality isn't available
+        if (selectedQuality && data.availableQualities && !data.availableQualities.includes(selectedQuality)) {
+          // Special handling for 4K - gracefully fallback to 1080p without showing error
+          if (selectedQuality === "4k" && data.availableQualities.includes("1080p")) {
+            toast({
+              title: "4K Not Available - Fallback to 1080p",
+              description: `4K quality is not available for this video. Automatically falling back to 1080p.`,
+            });
+            // Update selected quality to 1080p for consistency
+            setSelectedQuality("1080p");
+          } else {
+            toast({
+              title: "Quality Not Available",
+              description: `The requested quality (${selectedQuality}) is not available. Available qualities: ${data.availableQualities.join(', ')}`,
+              variant: "destructive",
+            });
+          }
+        }
+      } else {
+        const errorData = await response.json();
+        if (response.status === 404) {
+          toast({
+            title: "Video Not Available",
+            description: errorData.message || "This video cannot be downloaded.",
+            variant: "destructive",
+          });
+        } else if (response.status === 403) {
+          toast({
+            title: "Age-Restricted Video",
+            description: errorData.message || "This video requires age verification.",
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (error) {
+      console.log('Failed to check available formats:', error);
+    } finally {
+      setIsCheckingFormats(false);
+    }
+  };
+
+  // Debounced URL change handler
+  const handleUrlChange = (newUrl: string) => {
+    setUrl(newUrl);
+    
+    // Clear previous qualities when URL changes
+    setAvailableQualities([]);
+    setSelectedQuality("");
+    
+    // Check available formats after a short delay
+    if (newUrl.trim()) {
+      setTimeout(() => checkAvailableFormats(newUrl), 1000);
+    }
   };
 
   const handleDownload = () => {
@@ -262,6 +350,11 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
     { value: "360p", label: "360p", description: "Low" },
   ];
 
+  // Filter quality options to show available ones first
+  const filteredQualityOptions = Array.isArray(availableQualities) && availableQualities.length > 0 
+    ? qualityOptions.filter(option => availableQualities.includes(option.value))
+    : qualityOptions;
+
   const audioFormats = [
     { value: "mp3", label: "MP3", description: "320 kbps" },
     { value: "wav", label: "WAV", description: "Lossless" },
@@ -299,7 +392,7 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
               type="url"
               placeholder="https://www.youtube.com/watch?v=..."
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => handleUrlChange(e.target.value)}
               className="input-focus text-lg py-4 pr-12"
               disabled={isDownloading}
             />
@@ -310,10 +403,24 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
           {url && (
             <div className="mt-2 text-sm">
               {isValidYouTubeUrl(url) ? (
-                <span className="text-green-600 flex items-center">
-                  <i className="fas fa-check-circle mr-1"></i>
-                  Valid YouTube URL
-                </span>
+                <div className="space-y-1">
+                  <span className="text-green-600 flex items-center">
+                    <i className="fas fa-check-circle mr-1"></i>
+                    Valid YouTube URL
+                  </span>
+                  {isCheckingFormats && (
+                    <span className="text-blue-600 flex items-center">
+                      <i className="fas fa-spinner fa-spin mr-1"></i>
+                      Checking available qualities...
+                    </span>
+                  )}
+                  {availableQualities.length > 0 && !isCheckingFormats && (
+                    <span className="text-blue-600 flex items-center">
+                      <i className="fas fa-info-circle mr-1"></i>
+                      Available qualities: {availableQualities.join(', ')}
+                    </span>
+                  )}
+                </div>
               ) : (
                 <span className="text-yellow-600 flex items-center">
                   <i className="fas fa-exclamation-triangle mr-1"></i>
@@ -328,19 +435,22 @@ export default function Downloader({ onDownloadComplete }: DownloaderProps) {
           <TabsContent value="video" className="mb-6">
             <Label className="block text-sm font-medium text-gray-700 mb-3">Video Quality</Label>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {qualityOptions.map((option) => (
+              {filteredQualityOptions.map((option) => (
                 <div
                   key={option.value}
                   className={`bg-gray-50 border-2 rounded-lg p-4 cursor-pointer transition-all duration-200 ${
                     selectedQuality === option.value
                       ? "border-blue-500 bg-blue-50"
                       : "border-gray-200 hover:border-blue-500 hover:bg-blue-50"
-                  }`}
+                  } ${availableQualities.length > 0 && !availableQualities.includes(option.value) ? 'opacity-50' : ''}`}
                   onClick={() => !isDownloading && setSelectedQuality(option.value)}
                 >
                   <div className="text-center">
                     <div className="font-semibold text-gray-800">{option.label}</div>
                     <div className="text-sm text-gray-500">{option.description}</div>
+                    {availableQualities.length > 0 && !availableQualities.includes(option.value) && (
+                      <div className="text-xs text-red-500 mt-1">Not available</div>
+                    )}
                   </div>
                 </div>
               ))}

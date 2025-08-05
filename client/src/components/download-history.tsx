@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,10 +14,33 @@ export default function DownloadHistory() {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const previousHistoryRef = useRef<DownloadHistory[]>([]);
 
-  const { data: history = [], isLoading } = useQuery<DownloadHistory[]>({
+  const { data: history = [], isLoading, refetch, isFetching } = useQuery<DownloadHistory[]>({
     queryKey: ["/api/downloads"],
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    refetchInterval: 5000, // Refetch every 5 seconds to catch new downloads
+    refetchIntervalInBackground: false, // Only refetch when tab is active
   });
+
+  // Detect new downloads and show notification
+  useEffect(() => {
+    if (history.length > 0 && previousHistoryRef.current.length > 0) {
+      const newDownloads = history.filter(
+        (item) => !previousHistoryRef.current.some((prev) => prev.id === item.id)
+      );
+      
+      if (newDownloads.length > 0) {
+        toast({
+          title: "New Download Complete!",
+          description: `${newDownloads[0].title} has been added to your history.`,
+        });
+      }
+    }
+    
+    previousHistoryRef.current = history;
+  }, [history, toast]);
 
   const clearAllMutation = useMutation({
     mutationFn: () => apiRequest("DELETE", "/api/downloads"),
@@ -118,6 +141,12 @@ export default function DownloadHistory() {
           <h3 className="text-2xl font-bold text-gray-800 flex items-center space-x-3">
             <History className="h-6 w-6 text-blue-600" />
             <span>Download History</span>
+            {isFetching && !isLoading && (
+              <div className="flex items-center space-x-1 text-sm text-blue-600">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                <span>Updating...</span>
+              </div>
+            )}
           </h3>
           <div className="flex space-x-3">
             <Button
@@ -127,7 +156,7 @@ export default function DownloadHistory() {
               className="flex items-center space-x-2"
             >
               <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
+              <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
             </Button>
             <Button
               variant="outline"

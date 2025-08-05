@@ -210,10 +210,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const download = await storage.addDownloadHistory(validatedData);
       res.json(download);
     } catch (error) {
+      // Enhanced logging for debugging
+      console.error("Failed to add download to history:");
+      console.error("Request body:", req.body);
       if (error instanceof z.ZodError) {
+        console.error("Zod validation error:", error.errors);
         res.status(400).json({ message: "Invalid download data", errors: error.errors });
       } else {
-        res.status(500).json({ message: "Failed to add download to history" });
+        console.error("Database or other error:", error);
+        res.status(500).json({ message: "Failed to add download to history", error: error.message || error });
       }
     }
   });
@@ -345,6 +350,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const audioFormat = proxyResult.formats.find(f => f.quality === 'audio') || bestFormat;
             if (audioFormat.filesize) {
               fileSize = (audioFormat.filesize / (1024 * 1024)).toFixed(1) + ' MB';
+            } else {
+              // Estimate audio file size (assume 3 minutes if no duration available)
+              const bitrate = 128; // Standard MP3 bitrate
+              const estimatedSize = (3 * 60 * bitrate * 1000) / (8 * 1024 * 1024); // 3 minutes
+              fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
             }
             downloadUrl = `/api/stream/proxy-audio/${encodeURIComponent(url)}/${encodeURIComponent(filename)}`;
           } else {
@@ -352,6 +362,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             filename = `${sanitizedTitle}_${timestamp}.mp4`;
             if (bestFormat.filesize) {
               fileSize = (bestFormat.filesize / (1024 * 1024)).toFixed(1) + ' MB';
+            } else {
+              // Estimate video file size based on quality
+              const quality = bestFormat.quality || '720p';
+              const height = quality.includes('1080') ? 1080 : quality.includes('720') ? 720 : quality.includes('480') ? 480 : 360;
+              const estimatedMbps = height >= 1080 ? 8 : height >= 720 ? 5 : height >= 480 ? 2.5 : 1;
+              const estimatedSize = (3 * 60 * 1000 * estimatedMbps) / (8 * 1000); // 3 minutes
+              fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
             }
             downloadUrl = `/api/stream/proxy-video/${encodeURIComponent(url)}/${encodeURIComponent(filename)}?quality=${quality}`;
           }
@@ -501,14 +518,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
         const audioFormat = audioFormats.find(f => f.audioBitrate) || audioFormats[0];
         
+        console.log('Selected audio format:', {
+          qualityLabel: audioFormat?.qualityLabel,
+          audioBitrate: audioFormat?.audioBitrate,
+          contentLength: audioFormat?.contentLength,
+          approxDurationMs: audioFormat?.approxDurationMs,
+          hasAudio: audioFormat?.hasAudio
+        });
+        
+        // Always provide an audio file size estimate
         if (audioFormat && audioFormat.contentLength) {
           fileSize = (parseInt(audioFormat.contentLength) / (1024 * 1024)).toFixed(1) + ' MB';
+          console.log('Using contentLength for audio file size:', fileSize);
         } else if (audioFormat && audioFormat.approxDurationMs) {
           // Estimate size based on duration and bitrate
           const durationMs = parseInt(audioFormat.approxDurationMs);
           const bitrate = audioFormat.audioBitrate || 128;
           const estimatedSize = (durationMs * bitrate * 1000) / (8 * 1024 * 1024);
           fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          console.log('Using estimated audio file size:', fileSize);
+        } else if (videoDetails && videoDetails.lengthSeconds) {
+          // Fallback to video details duration
+          const durationMs = parseInt(videoDetails.lengthSeconds) * 1000;
+          const bitrate = audioFormat?.audioBitrate || 128;
+          const estimatedSize = (durationMs * bitrate * 1000) / (8 * 1024 * 1024);
+          fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          console.log('Using video details duration for audio file size:', fileSize);
+        } else {
+          // Default estimate for unknown duration
+          const bitrate = audioFormat?.audioBitrate || 128;
+          const estimatedSize = (3 * 60 * 1000 * bitrate * 1000) / (8 * 1024 * 1024); // Assume 3 minutes
+          fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          console.log('Using default estimate for audio file size:', fileSize);
         }
         
         downloadUrl = `/api/stream/audio/${encodeURIComponent(url)}/${encodeURIComponent(filename)}`;
@@ -553,42 +594,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // For 4K, use more sophisticated selection
         if (quality === '4k') {
-          // First try to find exact 2160p formats (video-only for 4K)
-          videoFormat = allVideoFormats.find(f => 
-            (f.qualityLabel === '2160p' || f.height === 2160) && f.hasVideo && !f.hasAudio
+          // First try to find exact 2160p formats with video+audio
+          videoFormat = videoAndAudioFormats.find(f =>
+            (f.qualityLabel === '2160p' || f.height === 2160 || f.qualityLabel?.includes('2160')) && f.hasVideo && f.hasAudio
           );
           
-          // Try different 4K quality labels
+          // Try different 4K quality labels with video+audio (including 1440p)
           if (!videoFormat) {
-            videoFormat = allVideoFormats.find(f => 
-              (f.qualityLabel?.includes('2160') || f.height === 2160) && f.hasVideo
+            videoFormat = videoAndAudioFormats.find(f =>
+              (f.qualityLabel?.includes('2160') || f.qualityLabel?.includes('1440') || f.height === 2160 || f.height === 1440) && f.hasVideo && f.hasAudio
             );
           }
           
-          // Try highest available video-only format if 4K not available
+          // Try highest available video+audio format if 4K not available
+          if (!videoFormat) {
+            videoFormat = videoAndAudioFormats
+              .filter(f => f.hasVideo && f.hasAudio && f.height && f.height >= 1080)
+              .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+          }
+          
+          // Fallback to 1080p video+audio format if no 4K available
+          if (!videoFormat) {
+            videoFormat = videoAndAudioFormats.find(f =>
+              (f.qualityLabel === '1080p' || f.height === 1080) && f.hasVideo && f.hasAudio
+            );
+          }
+          
+          // Fallback to video-only formats only if no video+audio available
           if (!videoFormat) {
             videoFormat = allVideoFormats
               .filter(f => f.hasVideo && !f.hasAudio && f.height && f.height >= 1080)
               .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
           }
-          
-          // Fallback to combined formats with highest resolution
-          if (!videoFormat) {
-            videoFormat = videoAndAudioFormats
-              .filter(f => f.height && f.height >= 1080)
-              .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
-          }
         } else if (quality === '1080p') {
-          // Try video-only formats first for higher quality
-          videoFormat = allVideoFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && !f.hasAudio);
+          // Try video+audio formats first for better quality
+          videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && f.hasAudio);
           
-          // If no video-only format, try combined formats
+          // If no video+audio format, try video-only formats
           if (!videoFormat) {
-            videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter);
+            videoFormat = allVideoFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && !f.hasAudio);
           }
         } else {
-          // For lower qualities, prefer combined formats
-          videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter);
+          // For all qualities, prefer video+audio formats
+          videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === qualityFilter && f.hasVideo && f.hasAudio);
           
           // Fallback to video-only if needed
           if (!videoFormat) {
@@ -600,36 +648,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!videoFormat && fallbackQualities.length > 0) {
           for (const fallback of fallbackQualities) {
             if (fallback === 'highest') {
-              // Try video-only first for highest quality
-              videoFormat = allVideoFormats
-                .filter(f => f.hasVideo && !f.hasAudio)
+              // Try video+audio first for highest quality
+              videoFormat = videoAndAudioFormats
+                .filter(f => f.hasVideo && f.hasAudio)
                 .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
               
               if (!videoFormat) {
-                videoFormat = videoAndAudioFormats.sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+                videoFormat = allVideoFormats
+                  .filter(f => f.hasVideo && !f.hasAudio)
+                  .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
               }
             } else if (fallback === 'lowest') {
               videoFormat = videoAndAudioFormats.sort((a, b) => (a.height || 0) - (b.height || 0))[0];
             } else {
-              // Try video-only first for specific qualities
-              videoFormat = allVideoFormats.find(f => f.qualityLabel === fallback && f.hasVideo && !f.hasAudio);
+              // Try video+audio first for specific qualities
+              videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === fallback && f.hasVideo && f.hasAudio);
               if (!videoFormat) {
-                videoFormat = videoAndAudioFormats.find(f => f.qualityLabel === fallback);
+                videoFormat = allVideoFormats.find(f => f.qualityLabel === fallback && f.hasVideo && !f.hasAudio);
               }
             }
             if (videoFormat) break;
           }
         }
         
-        // Last resort: get any video format
+        // Last resort: get any video format, preferring video+audio
         if (!videoFormat) {
-          videoFormat = allVideoFormats.filter(f => f.hasVideo)[0] || videoAndAudioFormats[0];
+          videoFormat = videoAndAudioFormats[0] || (Array.isArray(allVideoFormats) && allVideoFormats.filter(f => f.hasVideo)[0]);
         }
         
 
         
+        console.log('Selected video format:', {
+          qualityLabel: videoFormat?.qualityLabel,
+          height: videoFormat?.height,
+          contentLength: videoFormat?.contentLength,
+          approxDurationMs: videoFormat?.approxDurationMs,
+          hasVideo: videoFormat?.hasVideo,
+          hasAudio: videoFormat?.hasAudio,
+          formatType: videoFormat?.hasAudio ? 'video+audio' : 'video-only'
+        });
+        
+        // Always provide a file size estimate based on available information
         if (videoFormat && videoFormat.contentLength) {
           fileSize = (parseInt(videoFormat.contentLength) / (1024 * 1024)).toFixed(1) + ' MB';
+          console.log('Using contentLength for file size:', fileSize);
         } else if (videoFormat && videoFormat.approxDurationMs) {
           // Estimate size based on duration and quality
           const durationMs = parseInt(videoFormat.approxDurationMs);
@@ -637,6 +699,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const estimatedMbps = height >= 1080 ? 8 : height >= 720 ? 5 : height >= 480 ? 2.5 : 1;
           const estimatedSize = (durationMs * estimatedMbps) / (8 * 1000);
           fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          console.log('Using estimated file size:', fileSize);
+        } else if (videoDetails && videoDetails.lengthSeconds) {
+          // Fallback to video details duration
+          const durationMs = parseInt(videoDetails.lengthSeconds) * 1000;
+          const height = videoFormat?.height || 480;
+          const estimatedMbps = height >= 1080 ? 8 : height >= 720 ? 5 : height >= 480 ? 2.5 : 1;
+          const estimatedSize = (durationMs * estimatedMbps) / (8 * 1000);
+          fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          console.log('Using video details duration for file size:', fileSize);
+        } else {
+          // Default estimate for unknown duration
+          const height = videoFormat?.height || 480;
+          const estimatedMbps = height >= 1080 ? 8 : height >= 720 ? 5 : height >= 480 ? 2.5 : 1;
+          const estimatedSize = (3 * 60 * 1000 * estimatedMbps) / (8 * 1000); // Assume 3 minutes
+          fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          console.log('Using default estimate for file size:', fileSize);
         }
         
         downloadUrl = `/api/stream/video/${encodeURIComponent(url)}/${encodeURIComponent(filename)}?quality=${quality}`;
@@ -993,13 +1071,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // For 4K, use more sophisticated selection
       if (quality === '4k') {
         // First try to find exact 2160p formats (video-only for 4K)
-        selectedFormat = allVideoFormats.find(f => 
+        selectedFormat = allVideoFormats.find(f =>
           (f.qualityLabel === '2160p' || f.height === 2160) && f.hasVideo && !f.hasAudio
         );
         
         // Try different 4K quality labels
         if (!selectedFormat) {
-          selectedFormat = allVideoFormats.find(f => 
+          selectedFormat = allVideoFormats.find(f =>
             (f.qualityLabel?.includes('2160') || f.height === 2160) && f.hasVideo
           );
         }
@@ -1009,6 +1087,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           selectedFormat = allVideoFormats
             .filter(f => f.hasVideo && !f.hasAudio && f.height && f.height >= 1080)
             .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+        }
+        
+        // Fallback to 1080p video+audio format if no 4K available
+        if (!selectedFormat) {
+          selectedFormat = videoAndAudioFormats.find(f =>
+            (f.qualityLabel === '1080p' || f.height === 1080) && f.hasVideo && f.hasAudio
+          );
         }
         
         // Fallback to combined formats with highest resolution
@@ -1062,7 +1147,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Last resort: get any video format
       if (!selectedFormat) {
-        selectedFormat = allVideoFormats.filter(f => f.hasVideo)[0] || videoAndAudioFormats[0];
+        selectedFormat = (Array.isArray(allVideoFormats) && allVideoFormats.filter(f => f.hasVideo)[0]) || videoAndAudioFormats[0];
       }
 
 
@@ -1103,6 +1188,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get available formats for a video
+  app.post("/api/check-formats", async (req, res) => {
+    try {
+      const { url } = req.body;
+      
+      if (!url) {
+        return res.status(400).json({ message: "URL is required" });
+      }
+
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+
+      try {
+        const { stdout } = await execAsync(`python -m yt_dlp --list-formats --no-playlist "${url}"`);
+        
+        // Check for error messages in output
+        if (stdout.includes('Video unavailable') || stdout.includes('Private video') || stdout.includes('This video is not available')) {
+          return res.status(404).json({ 
+            message: "Video is not available for download",
+            suggestion: "This video may be private, age-restricted, or removed."
+          });
+        }
+        
+        if (stdout.includes('Sign in to confirm your age') || stdout.includes('age-restricted')) {
+          return res.status(403).json({ 
+            message: "Age-restricted video",
+            suggestion: "This video requires age verification and cannot be downloaded automatically."
+          });
+        }
+        
+        // Parse available formats
+        const lines = stdout.split('\n');
+        const formats = lines
+          .filter(line => line.includes('mp4') || line.includes('webm'))
+          .map(line => {
+            const match = line.match(/(\d+)\s+(\d+p?)\s+(\w+)/);
+            return match ? { id: match[1], quality: match[2], format: match[3] } : null;
+          })
+          .filter(Boolean);
+
+        const uniqueQualities = [...new Set(formats.map(f => f.quality))].sort((a, b) => {
+          const aNum = parseInt(a.replace('p', ''));
+          const bNum = parseInt(b.replace('p', ''));
+          return bNum - aNum; // Sort descending
+        });
+
+        if (formats.length === 0) {
+          return res.status(404).json({ 
+            message: "No downloadable formats found for this video",
+            suggestion: "This video may be private, age-restricted, or not available for download."
+          });
+        }
+
+        res.json({ 
+          success: true, 
+          formats: formats.slice(0, 10), // Limit to first 10 formats
+          availableQualities: uniqueQualities,
+          suggestedQuality: uniqueQualities[0] || 'best'
+        });
+      } catch (error) {
+        res.status(500).json({ 
+          message: "Failed to check available formats",
+          error: error.message 
+        });
+      }
+    } catch (error) {
+      res.status(500).json({ message: "Server error" });
+    }
+  });
+
   // FFmpeg-based download endpoint for better quality using yt-dlp
   app.post("/api/download-ffmpeg", async (req, res) => {
     try {
@@ -1110,6 +1266,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (!url) {
         return res.status(400).json({ message: "URL is required" });
+      }
+
+      // Check if FFmpeg is available
+      let ffmpegAvailable = false;
+      try {
+        const { exec } = require('child_process');
+        const { promisify } = require('util');
+        const execAsync = promisify(exec);
+        
+        // Try to run ffmpeg -version with a timeout
+        const result = await Promise.race([
+          execAsync('ffmpeg -version'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+        ]);
+        
+        if (result.stdout && result.stdout.includes('ffmpeg version')) {
+          ffmpegAvailable = true;
+          console.log('FFmpeg is available');
+        } else {
+          throw new Error('FFmpeg not found in output');
+        }
+      } catch (error: any) {
+        console.log('FFmpeg is not available, will use fallback method:', error.message);
+        ffmpegAvailable = false;
       }
 
       // Create temp directory for processing
@@ -1123,31 +1303,126 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const videoId = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1] || Date.now().toString();
       const outputPath = path.join(tempDir, `${videoId}_ffmpeg.${format}`);
 
-      // Use yt-dlp with FFmpeg for best quality
+      // If FFmpeg is not available, use regular ytdl-core instead
+      if (!ffmpegAvailable) {
+        console.log('Using ytdl-core fallback for FFmpeg download');
+        
+        try {
+          // Get video info
+          const info = await ytdl.getInfo(url);
+          const videoDetails = info.videoDetails;
+          
+          // Generate filename
+          const sanitizedTitle = videoDetails.title
+            .replace(/[^\w\s-]/g, '')
+            .replace(/\s+/g, '_')
+            .substring(0, 100);
+          const timestamp = Date.now();
+          const filename = `${sanitizedTitle}_${timestamp}.${format}`;
+          
+          // Find best format based on quality
+          let selectedFormat;
+          if (format === 'mp3') {
+            const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+            selectedFormat = audioFormats.find(f => f.audioBitrate) || audioFormats[0];
+          } else {
+            const videoFormats = ytdl.filterFormats(info.formats, 'video');
+            const videoAndAudioFormats = ytdl.filterFormats(info.formats, 'videoandaudio');
+            
+            // Map quality to format selection
+            switch(quality) {
+              case '4k':
+                // Try different 4K quality labels and height values
+                selectedFormat = videoAndAudioFormats.find(f => 
+                  (f.height === 2160 || f.height === 1440 || f.qualityLabel?.includes('2160') || f.qualityLabel?.includes('1440')) && 
+                  f.hasVideo && f.hasAudio
+                ) || videoFormats.find(f => 
+                  f.height === 2160 || f.height === 1440 || f.qualityLabel?.includes('2160') || f.qualityLabel?.includes('1440')
+                );
+                
+                // If no 4K found, try highest available quality
+                if (!selectedFormat) {
+                  selectedFormat = videoAndAudioFormats
+                    .filter(f => f.hasVideo && f.hasAudio && f.height && f.height >= 1080)
+                    .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+                }
+                break;
+              case '1080p':
+                selectedFormat = videoAndAudioFormats.find(f => f.height === 1080 && f.hasVideo && f.hasAudio) || videoFormats.find(f => f.height === 1080);
+                break;
+              case '720p':
+                selectedFormat = videoAndAudioFormats.find(f => f.height === 720 && f.hasVideo && f.hasAudio) || videoFormats.find(f => f.height === 720);
+                break;
+              case '480p':
+                selectedFormat = videoAndAudioFormats.find(f => f.height === 480 && f.hasVideo && f.hasAudio) || videoFormats.find(f => f.height === 480);
+                break;
+              default:
+                selectedFormat = videoAndAudioFormats[0] || videoFormats[0];
+            }
+          }
+          
+          if (!selectedFormat) {
+            return res.status(400).json({ message: "No suitable format found for the requested quality" });
+          }
+          
+          // Calculate estimated file size
+          let fileSize = "Unknown";
+          if (selectedFormat.contentLength) {
+            fileSize = (parseInt(selectedFormat.contentLength) / (1024 * 1024)).toFixed(1) + ' MB';
+          } else if (selectedFormat.approxDurationMs) {
+            const durationMs = parseInt(selectedFormat.approxDurationMs);
+            const bitrate = selectedFormat.audioBitrate || 128;
+            const estimatedSize = (durationMs * bitrate * 1000) / (8 * 1024 * 1024);
+            fileSize = estimatedSize.toFixed(1) + ' MB (est.)';
+          }
+          
+          // Set response headers
+          res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+          res.setHeader('Content-Type', format === 'mp3' ? 'audio/mpeg' : 'video/mp4');
+          if (selectedFormat.contentLength) {
+            res.setHeader('Content-Length', selectedFormat.contentLength);
+          }
+          
+          // Stream the video/audio
+          const stream = ytdl(url, { format: selectedFormat });
+          stream.pipe(res);
+          
+          return;
+        } catch (error) {
+          console.error('ytdl-core fallback failed:', error);
+          return res.status(500).json({ 
+            message: "Download failed. Please try the regular download options instead.",
+            suggestion: "FFmpeg is not installed, which is required for high-quality downloads. Please install FFmpeg or use the regular Video/Audio download buttons."
+          });
+        }
+      }
+
+      // Use yt-dlp with FFmpeg for best quality with fallback options
       let qualitySelector;
       switch(quality) {
         case '4k':
-          qualitySelector = 'bestvideo[height<=2160]+bestaudio/best[height<=2160]';
+          // Expanded fallback: 2160p, 1440p, 1080p, then best
+          qualitySelector = 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best';
           break;
         case '1440p':
-          qualitySelector = 'bestvideo[height<=1440]+bestaudio/best[height<=1440]';
+          qualitySelector = 'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/best';
           break;
         case '1080p':
-          qualitySelector = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]';
+          qualitySelector = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best';
           break;
         case '720p':
-          qualitySelector = 'bestvideo[height<=720]+bestaudio/best[height<=720]';
+          qualitySelector = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best';
           break;
         case '480p':
-          qualitySelector = 'bestvideo[height<=480]+bestaudio/best[height<=480]';
+          qualitySelector = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best';
           break;
         default:
           qualitySelector = 'best';
       }
 
-      // Enhanced yt-dlp command with anti-detection measures
-      const baseArgs = [
-        '--format', qualitySelector,
+      // Enhanced yt-dlp command with anti-detection measures and dynamic quality adjustment
+      const createBaseArgs = (qualitySel: string) => [
+        '--format', qualitySel,
         '--merge-output-format', format,
         '--output', outputPath,
         '--no-playlist',
@@ -1158,13 +1433,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
         '--no-write-playlist-metafiles',
         url
       ];
+      
+      const baseArgs = createBaseArgs(qualitySelector);
 
-      console.log(`FFmpeg download command: yt-dlp ${baseArgs.join(' ')}`);
+      console.log(`FFmpeg download command: python -m yt_dlp ${baseArgs.join(' ')}`);
+      
+      // Pre-check available formats to provide better error messages and enable smart fallback
+      let availableFormats = [];
+      let has2160p = false;
+      let has1440p = false;
+      let has1080p = false;
+      try {
+        const formatCheckProcess = spawn('python', ['-m', 'yt_dlp', '--list-formats', '--no-playlist', url]);
+        let formatOutput = '';
+        formatCheckProcess.stdout?.on('data', (data) => {
+          formatOutput += data.toString();
+        });
+        await new Promise((resolve, reject) => {
+          formatCheckProcess.on('close', (code) => {
+            if (code === 0) {
+              // Parse available formats
+              const lines = formatOutput.split('\n');
+              availableFormats = lines
+                .filter(line => line.includes('mp4') || line.includes('webm'))
+                .map(line => {
+                  const match = line.match(/(\d+)\s+(\d+p?)(?:\s+\w+)?/);
+                  return match ? { id: match[1], quality: match[2] } : null;
+                })
+                .filter(Boolean);
+              has2160p = availableFormats.some(f => f.quality === '2160p');
+              has1440p = availableFormats.some(f => f.quality === '1440p');
+              has1080p = availableFormats.some(f => f.quality === '1080p');
+              resolve();
+            } else {
+              reject(new Error(`Format check failed with code ${code}`));
+            }
+          });
+          formatCheckProcess.on('error', reject);
+        });
+        console.log(`Available formats: ${availableFormats.length} found`);
+      } catch (formatError) {
+        console.log('Format check failed, proceeding with download:', formatError);
+      }
+
+      // If user requested 4K but no 2160p or 1440p, fall back to 1080p
+      if (quality === '4k' && !has2160p && !has1440p && has1080p) {
+        console.log('Requested 4K, but only 1080p is available. Falling back to 1080p.');
+        qualitySelector = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best';
+      }
       
       let downloadSuccess = false;
       let lastError: any;
       
-      // Try multiple strategies for better success rate
+      // Try multiple strategies for better success rate with improved format handling and quality fallback
+      const qualityFallbacks = [
+        qualitySelector,
+        'best[ext=mp4]/best[ext=webm]/best',
+        'bestvideo+bestaudio/best',
+        'best'
+      ];
+      
       const strategies = [
         // Strategy 1: Standard download with anti-detection
         [...baseArgs],
@@ -1172,9 +1500,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         [...baseArgs, '--force-ipv4', '--add-header', 'Accept-Language:en-US,en;q=0.9'],
         // Strategy 3: Use mobile API
         [...baseArgs.slice(0, -1), '--user-agent', 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip', url],
-        // Strategy 4: Simple format without quality restriction
-        ['--format', 'mp4', '--merge-output-format', format, '--output', outputPath, '--no-playlist', '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', url],
-        // Strategy 5: Fallback to any available format
+        // Strategy 4: Quality fallback attempts
+        ...qualityFallbacks.slice(1).map(fallback => createBaseArgs(fallback)),
+        // Strategy 5: More flexible format selection
+        ['--format', 'best[ext=mp4]/best[ext=webm]/best', '--merge-output-format', format, '--output', outputPath, '--no-playlist', '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', url],
+        // Strategy 6: Any available format with quality fallback
+        ['--format', 'best', '--merge-output-format', format, '--output', outputPath, '--no-playlist', url],
+        // Strategy 7: Last resort - any format available
         ['--output', outputPath, '--no-playlist', url]
       ];
       
@@ -1184,7 +1516,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         try {
           await new Promise((resolve, reject) => {
-            const process = spawn('yt-dlp', currentArgs);
+            const process = spawn('python', ['-m', 'yt_dlp', ...currentArgs]);
             let stderr = '';
             let stdout = '';
             
@@ -1237,10 +1569,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Check if it's a 403 error (YouTube blocking)
         const isBlocked = lastError?.message?.includes('403') || lastError?.message?.includes('Forbidden');
         const isSignatureError = lastError?.message?.includes('nsig extraction failed') || lastError?.message?.includes('Signature extraction failed');
+        const isFormatError = lastError?.message?.includes('No suitable format found') || lastError?.message?.includes('Requested format not available');
         
         let errorMessage = "FFmpeg download failed. ";
+        let suggestion = "Try using the regular Video or Audio download buttons instead - they use different methods that may work better.";
         
-        if (isBlocked || isSignatureError) {
+        if (isFormatError && availableFormats.length > 0) {
+          const availableQualities = availableFormats.map(f => f.quality).filter((q, i, arr) => arr.indexOf(q) === i);
+          errorMessage += `The requested quality (${quality}) is not available for this video. `;
+          errorMessage += `Available qualities: ${availableQualities.join(', ')}. `;
+          suggestion = `Try selecting a different quality or use the regular download options.`;
+        } else if (isBlocked || isSignatureError) {
           errorMessage += "YouTube is currently blocking automated downloads. This is temporary - please try the regular download options instead, or wait 15-30 minutes before trying FFmpeg downloads again.";
         } else {
           errorMessage += "Please try again later or use the regular download options.";
@@ -1248,7 +1587,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         return res.status(503).json({ 
           message: errorMessage,
-          suggestion: "Try using the regular Video or Audio download buttons instead - they use different methods that may work better."
+          suggestion: suggestion,
+          availableFormats: availableFormats.length > 0 ? availableFormats.slice(0, 5) : undefined
+        });
+      }
+
+      // Check if file was actually created
+      if (!fs.existsSync(outputPath)) {
+        console.error('Download completed but file not found:', outputPath);
+        return res.status(500).json({ 
+          message: "Download failed - file was not created properly",
+          suggestion: "Please try the regular download options instead."
         });
       }
 
@@ -1256,7 +1605,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let title = 'video';
       try {
         const titlePromise = new Promise<string>((resolve, reject) => {
-          const process = spawn('yt-dlp', ['--get-title', url]);
+          const process = spawn('python', ['-m', 'yt_dlp', '--get-title', url]);
           let stdout = '';
           
           process.stdout?.on('data', (data) => {
@@ -1281,10 +1630,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log('Failed to get video title, using default');
       }
 
+      // Calculate file size
+      const stats = fs.statSync(outputPath);
+      const fileSize = (stats.size / (1024 * 1024)).toFixed(1) + ' MB';
+
       // Set response headers for download
       const filename = `${title}_${quality}.${format}`;
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       res.setHeader('Content-Type', format === 'mp4' ? 'video/mp4' : 'video/webm');
+      res.setHeader('Content-Length', stats.size.toString());
 
       // Stream the final file
       const fileStream = fs.createReadStream(outputPath);

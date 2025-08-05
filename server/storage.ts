@@ -1,6 +1,10 @@
-import { type DownloadHistory, type InsertDownloadHistory, downloadHistory } from "@shared/schema";
+import { type DownloadHistory, type InsertDownloadHistory, downloadHistory, downloadHistorySQLite } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc } from "drizzle-orm";
+
+// Determine which table to use based on environment
+const isSQLite = !process.env.DATABASE_URL;
+const downloadHistoryTable = isSQLite ? downloadHistorySQLite : downloadHistory;
 
 export interface IStorage {
   // Download History methods
@@ -12,13 +16,13 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   async getDownloadHistory(): Promise<DownloadHistory[]> {
-    const history = await db.select().from(downloadHistory).orderBy(desc(downloadHistory.downloadedAt));
+    const history = await db.select().from(downloadHistoryTable).orderBy(isSQLite ? downloadHistoryTable.downloadedAt.desc() : downloadHistoryTable.downloadedAt.desc());
     return history;
   }
 
   async addDownloadHistory(insertDownload: InsertDownloadHistory): Promise<DownloadHistory> {
     const [download] = await db
-      .insert(downloadHistory)
+      .insert(downloadHistoryTable)
       .values({
         ...insertDownload,
         quality: insertDownload.quality || null,
@@ -30,11 +34,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteDownloadHistory(id: string): Promise<void> {
-    await db.delete(downloadHistory).where(eq(downloadHistory.id, id));
+    await db.delete(downloadHistoryTable).where(downloadHistoryTable.id.eq(id));
   }
 
   async clearDownloadHistory(): Promise<void> {
-    await db.delete(downloadHistory);
+    await db.delete(downloadHistoryTable);
   }
 }
 

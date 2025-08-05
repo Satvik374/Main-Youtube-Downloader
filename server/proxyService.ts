@@ -167,7 +167,7 @@ class ProxyService {
   } = {}): Promise<VideoInfo> {
     const { format = 'best', quality = 'best', proxy } = options;
     
-    let ytDlpCmd = `yt-dlp --dump-json --no-download`;
+    let ytDlpCmd = `python -m yt_dlp --dump-json --no-download`;
     
     if (proxy) {
       ytDlpCmd += ` --proxy "http://${proxy.ip}:${proxy.port}"`;

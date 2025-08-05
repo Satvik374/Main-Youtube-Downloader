@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import Downloader from "@/components/downloader";
 import DownloadHistory from "@/components/download-history";
 
 export default function Home() {
-  const [refreshHistory, setRefreshHistory] = useState(0);
+  const queryClient = useQueryClient();
 
   const handleDownloadComplete = () => {
-    setRefreshHistory(prev => prev + 1);
+    // Invalidate the downloads query to trigger a refresh
+    queryClient.invalidateQueries({ queryKey: ["/api/downloads"] });
   };
 
   return (
@@ -37,7 +38,7 @@ export default function Home() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <Downloader onDownloadComplete={handleDownloadComplete} />
-          <DownloadHistory key={refreshHistory} />
+          <DownloadHistory />
         </div>
       </div>
 
